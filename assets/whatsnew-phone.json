@@ -1,0 +1,32 @@
+{
+ "version": "1.1.0",
+ "items": [
+  {
+   "icon": "wn_lib",
+   "title": "Your addons",
+   "text": "Home, Discover, Library and Search, with your Stremio account."
+  },
+  {
+   "icon": "wn_opts",
+   "title": "The best stream",
+   "text": "Picked for you in one press."
+  },
+  {
+   "icon": "wn_av",
+   "title": "Seek previews",
+   "text": "A picture of the film on the seek bar, for debrid and direct links."
+  },
+  {
+   "icon": "wn_lib",
+   "title": "Your library",
+   "text": "Library, watched state and Continue Watching synced with your Stremio account."
+  },
+  "And much more."
+ ],
+ "support": {
+  "title": "Thank you",
+  "message": "Thank you!",
+  "url": "https://ko-fi.com/simussu",
+  "github": "https://github.com/stremio-origin/android-phone"
+ }
+}

@@ -1,0 +1,9 @@
+{
+ "Allow installs from Stremio Origin, then install again": "Разрешите установку из Stremio Origin, затем установите снова",
+ "The download was damaged: try again": "Загрузка повреждена: попробуйте ещё раз",
+ "The update was cancelled": "Обновление отменено",
+ "Not enough space for the update": "Недостаточно места для обновления",
+ "The installer did not open": "Установщик не открылся",
+ "The download failed": "Ошибка загрузки",
+ "Confirm the update on the screen": "Подтвердите обновление на экране"
+}

@@ -1,0 +1,9 @@
+libVLC (Android phone builds)
+
+The Android app plays video through libVLC from VLC for Android by VideoLAN
+(https://github.com/videolan/vlc-android, https://code.videolan.org/videolan/vlc),
+distributed as the Maven package org.videolan.android:libvlc-all and used unmodified.
+
+libVLC is licensed under the GNU Lesser General Public License, version 2.1 or later.
+The full text of the LGPL 2.1 is in ffmpeg-LGPL-2.1.txt beside this file. Its sources:
+https://code.videolan.org/videolan/vlc-android and https://code.videolan.org/videolan/vlc

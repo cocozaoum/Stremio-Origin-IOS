@@ -1,0 +1,9 @@
+{
+ "Allow installs from Stremio Origin, then install again": "Cho phép cài đặt từ Stremio Origin, sau đó cài đặt lại",
+ "The download was damaged: try again": "Tệp tải xuống bị hỏng: hãy thử lại",
+ "The update was cancelled": "Đã hủy bản cập nhật",
+ "Not enough space for the update": "Không đủ dung lượng để cập nhật",
+ "The installer did not open": "Không mở được trình cài đặt",
+ "The download failed": "Tải xuống thất bại",
+ "Confirm the update on the screen": "Xác nhận bản cập nhật trên màn hình"
+}

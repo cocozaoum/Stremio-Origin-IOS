@@ -1,0 +1,10 @@
+{
+ "This phone can’t play AV1 video": "Bu telefon AV1 videoları oynatamıyor",
+ "This phone can’t play Dolby Vision video": "Bu telefon Dolby Vision videoları oynatamıyor",
+ "This phone can’t play 4K video": "Bu telefon 4K videoları oynatamıyor",
+ "This phone can’t play this video’s sound (DTS or TrueHD)": "Bu telefon bu videonun sesini oynatamıyor (DTS veya TrueHD)",
+ "The video format isn’t supported by this phone": "Bu telefonda video biçimi desteklenmiyor",
+ "The phone couldn’t open the video": "Telefon videoyu açamadı",
+ "These subtitles are pictures: their look can’t be changed.": "Bu altyazılar resim: görünümleri değiştirilemez.",
+ "Styled subtitles keep their own colours and background.": "Stilli altyazılar kendi renklerini ve arka planlarını korur."
+}

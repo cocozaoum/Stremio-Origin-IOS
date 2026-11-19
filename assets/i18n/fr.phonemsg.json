@@ -1,0 +1,10 @@
+{
+ "This phone can’t play AV1 video": "Ce téléphone ne peut pas lire les vidéos AV1",
+ "This phone can’t play Dolby Vision video": "Ce téléphone ne peut pas lire les vidéos Dolby Vision",
+ "This phone can’t play 4K video": "Ce téléphone ne peut pas lire les vidéos 4K",
+ "This phone can’t play this video’s sound (DTS or TrueHD)": "Ce téléphone ne peut pas lire le son de cette vidéo (DTS ou TrueHD)",
+ "The video format isn’t supported by this phone": "Le format vidéo n’est pas pris en charge par ce téléphone",
+ "The phone couldn’t open the video": "Le téléphone n’a pas pu ouvrir la vidéo",
+ "These subtitles are pictures: their look can’t be changed.": "Ces sous-titres sont des images : leur apparence ne peut pas être modifiée.",
+ "Styled subtitles keep their own colours and background.": "Les sous-titres stylés gardent leurs propres couleurs et leur fond."
+}

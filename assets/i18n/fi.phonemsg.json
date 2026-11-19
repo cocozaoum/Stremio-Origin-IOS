@@ -1,0 +1,10 @@
+{
+ "This phone can’t play AV1 video": "Tämä puhelin ei pysty toistamaan AV1-videota",
+ "This phone can’t play Dolby Vision video": "Tämä puhelin ei pysty toistamaan Dolby Vision -videota",
+ "This phone can’t play 4K video": "Tämä puhelin ei pysty toistamaan 4K-videota",
+ "This phone can’t play this video’s sound (DTS or TrueHD)": "Tämä puhelin ei pysty toistamaan tämän videon ääntä (DTS tai TrueHD)",
+ "The video format isn’t supported by this phone": "Tämä puhelin ei tue videomuotoa",
+ "The phone couldn’t open the video": "Puhelin ei voinut avata videota",
+ "These subtitles are pictures: their look can’t be changed.": "Nämä tekstitykset ovat kuvia: niiden ulkoasua ei voi muuttaa.",
+ "Styled subtitles keep their own colours and background.": "Tyylitellyt tekstitykset pitävät omat värinsä ja taustansa."
+}

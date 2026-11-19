@@ -1,0 +1,9 @@
+{
+ "Allow installs from Stremio Origin, then install again": "Dopustite instalacije iz aplikacije Stremio Origin, zatim ponovno instalirajte",
+ "The download was damaged: try again": "Preuzimanje je oštećeno: pokušajte ponovno",
+ "The update was cancelled": "Ažuriranje je otkazano",
+ "Not enough space for the update": "Nema dovoljno prostora za ažuriranje",
+ "The installer did not open": "Instalacijski program nije se otvorio",
+ "The download failed": "Preuzimanje nije uspjelo",
+ "Confirm the update on the screen": "Potvrdite ažuriranje na zaslonu"
+}

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- the window is the app's own page colour from the first frame: no white or black flash before the app's start screen -->
+    <style name="Theme.Origin" parent="@android:style/Theme.Black.NoTitleBar">
+        <item name="android:windowBackground">@color/page</item>
+        <item name="android:windowNoTitle">true</item>
+    </style>
+    <color name="page">#0C0B11</color>
+</resources>

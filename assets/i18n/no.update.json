@@ -1,0 +1,9 @@
+{
+ "Allow installs from Stremio Origin, then install again": "Tillat installasjon fra Stremio Origin, og installer på nytt",
+ "The download was damaged: try again": "Nedlastingen er skadet: prøv igjen",
+ "The update was cancelled": "Oppdateringen ble avbrutt",
+ "Not enough space for the update": "Ikke nok plass til oppdateringen",
+ "The installer did not open": "Installasjonsprogrammet kunne ikke åpnes",
+ "The download failed": "Nedlastingen mislyktes",
+ "Confirm the update on the screen": "Bekreft oppdateringen på skjermen"
+}

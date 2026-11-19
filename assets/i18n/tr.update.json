@@ -1,0 +1,9 @@
+{
+ "Allow installs from Stremio Origin, then install again": "Stremio Origin'den yüklemeye izin verin, ardından yeniden yükleyin",
+ "The download was damaged: try again": "İndirme bozuk: tekrar deneyin",
+ "The update was cancelled": "Güncelleme iptal edildi",
+ "Not enough space for the update": "Güncelleme için yeterli alan yok",
+ "The installer did not open": "Yükleyici açılamadı",
+ "The download failed": "İndirme başarısız oldu",
+ "Confirm the update on the screen": "Güncellemeyi ekranda onaylayın"
+}

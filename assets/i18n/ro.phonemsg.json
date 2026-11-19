@@ -1,0 +1,10 @@
+{
+ "This phone can’t play AV1 video": "Acest telefon nu poate reda video AV1",
+ "This phone can’t play Dolby Vision video": "Acest telefon nu poate reda video Dolby Vision",
+ "This phone can’t play 4K video": "Acest telefon nu poate reda video 4K",
+ "This phone can’t play this video’s sound (DTS or TrueHD)": "Acest telefon nu poate reda sunetul acestui videoclip (DTS sau TrueHD)",
+ "The video format isn’t supported by this phone": "Formatul video nu este suportat de acest telefon",
+ "The phone couldn’t open the video": "Telefonul nu a putut deschide videoclipul",
+ "These subtitles are pictures: their look can’t be changed.": "Aceste subtitrări sunt imagini: aspectul lor nu poate fi schimbat.",
+ "Styled subtitles keep their own colours and background.": "Subtitrările stilizate își păstrează propriile culori și fundal."
+}

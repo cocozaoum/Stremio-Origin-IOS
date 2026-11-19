@@ -1,0 +1,9 @@
+{
+ "Allow installs from Stremio Origin, then install again": "Разрешете инсталиране от Stremio Origin, след което инсталирайте отново",
+ "The download was damaged: try again": "Изтеглянето е повредено: опитайте отново",
+ "The update was cancelled": "Актуализацията е отменена",
+ "Not enough space for the update": "Няма достатъчно място за актуализацията",
+ "The installer did not open": "Инсталаторът не се отвори",
+ "The download failed": "Изтеглянето не успя",
+ "Confirm the update on the screen": "Потвърдете актуализацията на екрана"
+}

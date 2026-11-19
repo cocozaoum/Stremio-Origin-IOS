@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- the video players on the phone (Settings > Playback > External player) -->
+    <queries>
+        <intent><action android:name="android.intent.action.VIEW" /><data android:scheme="https" android:mimeType="video/*" /></intent>
+        <intent><action android:name="android.intent.action.VIEW" /><data android:scheme="http" android:mimeType="video/*" /></intent>
+    </queries>
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- in-app updates: the new APK handed to the system's installer (the user confirms) -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- downloads: their notification, and the service that keeps them going in the background -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <!-- downloads into a folder the user picks on the phone: older Androids ask for writing, newer ones for all files -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+    <uses-feature android:name="android.software.leanback" android:required="false" />
+    <uses-feature android:glEsVersion="0x00020000" android:required="true" />
+
+    <application
+        android:label="Stremio Origin"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:usesCleartextTraffic="true"
+        android:requestLegacyExternalStorage="true"
+        android:hardwareAccelerated="true"
+        android:theme="@style/Theme.Origin">
+
+        <activity
+            android:name="app.stremioorigin.phone.MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:supportsPictureInPicture="true"
+            android:resizeableActivity="true"
+            android:screenOrientation="fullUser"
+            android:configChanges="layoutDirection|locale|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <service android:name=".DownloadService" android:exported="false" android:foregroundServiceType="dataSync" />
+        <!-- playing on a TV: its controls in a media notification and on the lock screen -->
+        <service android:name=".CastService" android:exported="false" android:foregroundServiceType="mediaPlayback" />
+        <!-- the downloaded update, read by the system's installer (ApkProvider) -->
+        <provider android:name="app.stremioorigin.phone.ApkProvider" android:authorities="app.stremioorigin.phone.apk" android:exported="false" android:grantUriPermissions="true" />
+        <!-- the app opens again after an update it started itself (UpdatedReceiver) -->
+        <receiver android:name="app.stremioorigin.phone.UpdatedReceiver" android:exported="false">
+            <intent-filter><action android:name="android.intent.action.MY_PACKAGE_REPLACED" /></intent-filter>
+        </receiver>
+    </application>
+
+</manifest>

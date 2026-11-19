@@ -1,0 +1,9 @@
+{
+ "Allow installs from Stremio Origin, then install again": "Sta installaties van Stremio Origin toe en installeer daarna opnieuw",
+ "The download was damaged: try again": "De download is beschadigd: probeer het opnieuw",
+ "The update was cancelled": "De update is geannuleerd",
+ "Not enough space for the update": "Niet genoeg ruimte voor de update",
+ "The installer did not open": "Het installatieprogramma is niet geopend",
+ "The download failed": "De download is mislukt",
+ "Confirm the update on the screen": "Bevestig de update op het scherm"
+}

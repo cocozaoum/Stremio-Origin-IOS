@@ -1,0 +1,10 @@
+{
+ "This phone can’t play AV1 video": "این گوشی ویدیوی AV1 را پخش نمی‌کند",
+ "This phone can’t play Dolby Vision video": "این گوشی ویدیوی Dolby Vision را پخش نمی‌کند",
+ "This phone can’t play 4K video": "این گوشی ویدیوی 4K را پخش نمی‌کند",
+ "This phone can’t play this video’s sound (DTS or TrueHD)": "این گوشی صدای این ویدیو را پخش نمی‌کند (DTS یا TrueHD)",
+ "The video format isn’t supported by this phone": "فرمت ویدیو توسط این گوشی پشتیبانی نمی‌شود",
+ "The phone couldn’t open the video": "گوشی نتوانست ویدیو را باز کند",
+ "These subtitles are pictures: their look can’t be changed.": "این زیرنویس‌ها تصویر هستند: ظاهرشان قابل تغییر نیست.",
+ "Styled subtitles keep their own colours and background.": "زیرنویس‌های سبک‌دار رنگ‌ها و پس‌زمینهٔ خودشان را نگه می‌دارند."
+}

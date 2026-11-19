@@ -1,0 +1,10 @@
+{
+ "This phone can’t play AV1 video": "Den här telefonen kan inte spela upp AV1-video",
+ "This phone can’t play Dolby Vision video": "Den här telefonen kan inte spela upp Dolby Vision-video",
+ "This phone can’t play 4K video": "Den här telefonen kan inte spela upp 4K-video",
+ "This phone can’t play this video’s sound (DTS or TrueHD)": "Den här telefonen kan inte spela upp videons ljud (DTS eller TrueHD)",
+ "The video format isn’t supported by this phone": "Videoformatet stöds inte av den här telefonen",
+ "The phone couldn’t open the video": "Telefonen kunde inte öppna videon",
+ "These subtitles are pictures: their look can’t be changed.": "Dessa undertexter är bilder: deras utseende kan inte ändras.",
+ "Styled subtitles keep their own colours and background.": "Formaterade undertexter behåller sina egna färger och bakgrund."
+}

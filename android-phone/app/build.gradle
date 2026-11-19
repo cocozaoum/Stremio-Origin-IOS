@@ -1,0 +1,77 @@
+// The formatting is rough and I'm not going to bother. Pull requests that fix it are welcome; complaints without one help neither me nor the end user.
+plugins {
+    id 'com.android.application'
+}
+
+def keyProps = new Properties()
+def keyPropsFile = new File(System.getProperty('user.home'), 'stremiobrew-build/android/keys/phone.properties')
+def hasKeys = keyPropsFile.exists()
+if (hasKeys) {
+    keyPropsFile.withInputStream { keyProps.load(it) }
+}
+
+android {
+    namespace 'app.stremioorigin.phone'
+    compileSdk 36
+
+    defaultConfig {
+        applicationId 'app.stremioorigin.phone'
+        minSdk 24
+        targetSdk 35
+        versionCode 10100 /* x*10000 + y*100 + z: always above the last (the train: 1.1) */
+        versionName '1.1.0'
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    signingConfigs {
+        if (hasKeys) {
+            release {
+                storeFile file(keyProps.getProperty('storeFile'))
+                storePassword keyProps.getProperty('storePassword')
+                keyAlias keyProps.getProperty('keyAlias')
+                keyPassword keyProps.getProperty('keyPassword')
+            }
+        }
+    }
+
+    buildTypes {
+        /* the builds put on a phone by hand wear the release key too: one signature for every build, so an installed
+           test build takes the published releases through the app's own updater (Android refuses another signature) */
+        debug {
+            if (hasKeys) {
+                signingConfig signingConfigs.release
+            }
+        }
+        release {
+            minifyEnabled false
+            if (hasKeys) {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+
+    /* one APK per processor: libVLC is large, a phone only needs its own */
+    splits { abi { enable true; reset(); include 'arm64-v8a', 'armeabi-v7a'; universalApk false } }
+
+    sourceSets {
+        main {
+            assets.srcDirs = ['../../assets']
+            jniLibs.srcDirs = ['src/main/jniLibs']
+        }
+    }
+
+    packagingOptions {
+        jniLibs {
+            useLegacyPackaging true
+        }
+    }
+}
+
+dependencies {
+    /* the video engine: libVLC from VLC for Android (LGPL 2.1+), unmodified */
+    implementation 'org.videolan.android:libvlc-all:3.7.7'
+}

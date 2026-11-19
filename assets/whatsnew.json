@@ -1,0 +1,42 @@
+{
+  "version": "1.1.0",
+  "items": [
+    {
+      "icon": "trakt",
+      "title": "Trakt",
+      "text": "Connect it with a code on your TV. What you watch is sent to Trakt."
+    },
+    {
+      "icon": "wn_lib",
+      "title": "Your library",
+      "text": "Home shows every catalog, your whole library syncs, and a series moves on to its next episode."
+    },
+    {
+      "icon": "wn_live",
+      "title": "Live",
+      "text": "Live channels and sports play, with a LIVE badge."
+    },
+    {
+      "icon": "wn_av",
+      "title": "Dolby Vision",
+      "text": "Profiles 8 and 5 in MKV files."
+    },
+    {
+      "icon": "wn_remote",
+      "title": "Remote and screen",
+      "text": "The pointer hides when idle, OK presses what you point at, and the TV's screen saver stays off during films."
+    },
+    {
+      "icon": "wn_opts",
+      "title": "More options",
+      "text": "Subtitle position, skip intros on or off, more subtitle languages, and Greek."
+    }
+  ],
+  "support": {
+    "title": "Thank you",
+    "message": "Thank you!",
+    "url": "https://ko-fi.com/simussu",
+    "github": "https://github.com/stremio-origin/webos"
+  },
+  "note": "New in this version: please try it and tell us if it works, in Settings > About > Share logs."
+}

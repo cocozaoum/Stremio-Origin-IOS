@@ -1,0 +1,10 @@
+{
+ "This phone can’t play AV1 video": "Ez a telefon nem tud AV1 videót lejátszani",
+ "This phone can’t play Dolby Vision video": "Ez a telefon nem tud Dolby Vision videót lejátszani",
+ "This phone can’t play 4K video": "Ez a telefon nem tud 4K videót lejátszani",
+ "This phone can’t play this video’s sound (DTS or TrueHD)": "Ez a telefon nem tudja lejátszani ennek a videónak a hangját (DTS vagy TrueHD)",
+ "The video format isn’t supported by this phone": "Ez a videoformátum nem támogatott ezen a telefonon",
+ "The phone couldn’t open the video": "A telefon nem tudta megnyitni a videót",
+ "These subtitles are pictures: their look can’t be changed.": "Ezek a feliratok képek: a kinézetük nem módosítható.",
+ "Styled subtitles keep their own colours and background.": "A stílusos feliratok megtartják saját színeiket és hátterüket."
+}

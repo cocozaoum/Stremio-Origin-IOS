@@ -1,0 +1,9 @@
+{
+ "Allow installs from Stremio Origin, then install again": "نصب از Stremio Origin را مجاز کنید، سپس دوباره نصب کنید",
+ "The download was damaged: try again": "فایل دانلودشده خراب است: دوباره امتحان کنید",
+ "The update was cancelled": "به‌روزرسانی لغو شد",
+ "Not enough space for the update": "فضای کافی برای به‌روزرسانی وجود ندارد",
+ "The installer did not open": "نصب‌کننده باز نشد",
+ "The download failed": "دانلود ناموفق بود",
+ "Confirm the update on the screen": "به‌روزرسانی را روی صفحه تأیید کنید"
+}

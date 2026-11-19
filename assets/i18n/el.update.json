@@ -1,0 +1,9 @@
+{
+ "Allow installs from Stremio Origin, then install again": "Επιτρέψτε εγκαταστάσεις από το Stremio Origin και εγκαταστήστε ξανά",
+ "The download was damaged: try again": "Η λήψη είναι κατεστραμμένη: δοκιμάστε ξανά",
+ "The update was cancelled": "Η ενημέρωση ακυρώθηκε",
+ "Not enough space for the update": "Δεν υπάρχει αρκετός χώρος για την ενημέρωση",
+ "The installer did not open": "Το πρόγραμμα εγκατάστασης δεν άνοιξε",
+ "The download failed": "Η λήψη απέτυχε",
+ "Confirm the update on the screen": "Επιβεβαιώστε την ενημέρωση στην οθόνη"
+}

@@ -1,0 +1,10 @@
+{
+ "This phone can’t play AV1 video": "Điện thoại này không phát được video AV1",
+ "This phone can’t play Dolby Vision video": "Điện thoại này không phát được video Dolby Vision",
+ "This phone can’t play 4K video": "Điện thoại này không phát được video 4K",
+ "This phone can’t play this video’s sound (DTS or TrueHD)": "Điện thoại này không phát được âm thanh của video này (DTS hoặc TrueHD)",
+ "The video format isn’t supported by this phone": "Điện thoại này không hỗ trợ định dạng video này",
+ "The phone couldn’t open the video": "Điện thoại không mở được video",
+ "These subtitles are pictures: their look can’t be changed.": "Phụ đề này là hình ảnh: không thể đổi giao diện.",
+ "Styled subtitles keep their own colours and background.": "Phụ đề có định dạng giữ nguyên màu và nền riêng."
+}

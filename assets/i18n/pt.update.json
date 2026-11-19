@@ -1,0 +1,9 @@
+{
+ "Allow installs from Stremio Origin, then install again": "Permita instalações a partir do Stremio Origin e depois instale novamente",
+ "The download was damaged: try again": "A transferência está danificada: tente novamente",
+ "The update was cancelled": "A atualização foi cancelada",
+ "Not enough space for the update": "Não há espaço suficiente para a atualização",
+ "The installer did not open": "O instalador não abriu",
+ "The download failed": "A transferência falhou",
+ "Confirm the update on the screen": "Confirme a atualização no ecrã"
+}

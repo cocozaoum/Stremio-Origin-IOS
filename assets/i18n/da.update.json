@@ -1,0 +1,9 @@
+{
+ "Allow installs from Stremio Origin, then install again": "Tillad installation fra Stremio Origin, og installer igen",
+ "The download was damaged: try again": "Hentningen er beskadiget: prøv igen",
+ "The update was cancelled": "Opdateringen blev annulleret",
+ "Not enough space for the update": "Der er ikke nok plads til opdateringen",
+ "The installer did not open": "Installationsprogrammet kunne ikke åbnes",
+ "The download failed": "Hentningen mislykkedes",
+ "Confirm the update on the screen": "Bekræft opdateringen på skærmen"
+}

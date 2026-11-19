@@ -1,0 +1,9 @@
+{
+ "Allow installs from Stremio Origin, then install again": "Povoľte inštalácie zo Stremio Origin a potom inštalujte znova",
+ "The download was damaged: try again": "Sťahovanie je poškodené: skúste to znova",
+ "The update was cancelled": "Aktualizácia bola zrušená",
+ "Not enough space for the update": "Na aktualizáciu nie je dostatok miesta",
+ "The installer did not open": "Inštalátor sa neotvoril",
+ "The download failed": "Sťahovanie zlyhalo",
+ "Confirm the update on the screen": "Potvrďte aktualizáciu na obrazovke"
+}

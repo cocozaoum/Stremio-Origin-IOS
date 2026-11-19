@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Android 12+: the system's start card is the app's page colour alone (no mark): the app's own start screen is the only one seen -->
+    <style name="Theme.Origin" parent="@android:style/Theme.Black.NoTitleBar">
+        <item name="android:windowBackground">@color/page</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowSplashScreenBackground">@color/page</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/splash_none</item>
+        <item name="android:windowSplashScreenAnimationDuration">0</item>
+    </style>
+</resources>

@@ -1,0 +1,9 @@
+{
+ "Allow installs from Stremio Origin, then install again": "Engedélyezze a telepítést a Stremio Origin alkalmazásból, majd telepítse újra",
+ "The download was damaged: try again": "A letöltés sérült: próbálja újra",
+ "The update was cancelled": "A frissítés megszakadt",
+ "Not enough space for the update": "Nincs elég hely a frissítéshez",
+ "The installer did not open": "A telepítő nem nyílt meg",
+ "The download failed": "A letöltés sikertelen volt",
+ "Confirm the update on the screen": "Erősítse meg a frissítést a képernyőn"
+}

@@ -1,0 +1,10 @@
+{
+ "This phone can’t play AV1 video": "Този телефон не може да пуска AV1 видео",
+ "This phone can’t play Dolby Vision video": "Този телефон не може да пуска Dolby Vision видео",
+ "This phone can’t play 4K video": "Този телефон не може да пуска 4K видео",
+ "This phone can’t play this video’s sound (DTS or TrueHD)": "Този телефон не може да пусне звука на това видео (DTS или TrueHD)",
+ "The video format isn’t supported by this phone": "Видеоформатът не се поддържа от този телефон",
+ "The phone couldn’t open the video": "Телефонът не можа да отвори видеото",
+ "These subtitles are pictures: their look can’t be changed.": "Тези субтитри са изображения: видът им не може да се променя.",
+ "Styled subtitles keep their own colours and background.": "Стилизираните субтитри запазват своите цветове и фон."
+}

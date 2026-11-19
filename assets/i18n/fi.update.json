@@ -1,0 +1,9 @@
+{
+ "Allow installs from Stremio Origin, then install again": "Salli asennukset Stremio Originista ja asenna sitten uudelleen",
+ "The download was damaged: try again": "Lataus on vaurioitunut: yritä uudelleen",
+ "The update was cancelled": "Päivitys peruttiin",
+ "Not enough space for the update": "Päivitykselle ei ole tarpeeksi tilaa",
+ "The installer did not open": "Asennusohjelma ei avautunut",
+ "The download failed": "Lataus epäonnistui",
+ "Confirm the update on the screen": "Vahvista päivitys näytöllä"
+}

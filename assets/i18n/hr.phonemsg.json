@@ -1,0 +1,10 @@
+{
+ "This phone can’t play AV1 video": "Ovaj telefon ne može reproducirati AV1 video",
+ "This phone can’t play Dolby Vision video": "Ovaj telefon ne može reproducirati Dolby Vision video",
+ "This phone can’t play 4K video": "Ovaj telefon ne može reproducirati 4K video",
+ "This phone can’t play this video’s sound (DTS or TrueHD)": "Ovaj telefon ne može reproducirati zvuk ovog videa (DTS ili TrueHD)",
+ "The video format isn’t supported by this phone": "Format videa nije podržan na ovom telefonu",
+ "The phone couldn’t open the video": "Telefon nije mogao otvoriti video",
+ "These subtitles are pictures: their look can’t be changed.": "Ovi titlovi su slike: njihov izgled se ne može promijeniti.",
+ "Styled subtitles keep their own colours and background.": "Stilizirani titlovi zadržavaju vlastite boje i pozadinu."
+}

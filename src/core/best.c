@@ -1,0 +1,691 @@
+/* The best stream for this TV: Settings > Playback > "Play the best stream automatically". Play starts,
+   without the list, the stream that suits this TV and this connection. What the TV can show and decode is
+   asked once (its panel, HDR / Dolby Vision, the codecs its media engine takes), the connection is measured
+   once when the setting is switched on. Each stream is read from its own text: resolution, HDR, audio,
+   source, size (with the running time: its bitrate), seeds. Debrid files are taken at the best quality the
+   TV and the line carry, torrents need live peers. The scoring is the web app's, number for number. */
+#include "core/best.h"
+#include "core/tmdb.h"
+#include "core/subs.h"
+#include "core/i18n.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+#ifndef SB_BEST_PURE
+#include "core/app.h"
+#include "core/json.h"
+#include "core/net.h"
+#include "core/store.h"
+#include "platform/plat.h"
+#include <pthread.h>
+#include <time.h>
+#include <SDL2/SDL.h>
+#endif
+
+/* ---- reading the text ----------------------------------------------------------------------------- */
+/* \b as the web reads it: letters, digits and _ are word characters, everything else (UTF-8 bytes included) is not */
+static int wch(unsigned char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'; }
+static int is_dig(unsigned char c) { return c >= '0' && c <= '9'; }
+static int word_at(const char *s, const char *p, size_t n, int before, int after) { return (!before || p == s || !wch((unsigned char)p[-1])) && (!after || !wch((unsigned char)p[n])); }
+static int find_w(const char *s, const char *w, int before, int after) { size_t n = strlen(w); for (const char *p = s; (p = strstr(p, w)); p++) if (word_at(s, p, n, before, after)) return 1; return 0; }
+static int has_word(const char *s, const char *w) { return find_w(s, w, 1, 1); }
+static void lower(const char *s, char *out, size_t cap) { size_t i = 0; for (; s[i] && i + 1 < cap; i++) { unsigned char c = (unsigned char)s[i]; out[i] = (char)(c >= 'A' && c <= 'Z' ? c + 32 : c); } out[i] = 0; }
+static void blank(char *s, const char *set) { for (; *s; s++) if (strchr(set, *s)) *s = ' '; }
+/* after p: an optional space, then an optional dash (the web's " ?-?") */
+static const char *opt_sp_dash(const char *p) { if (*p == ' ') p++; if (*p == '-') p++; return p; }
+
+/* JavaScript's \s, in UTF-8: the length of the space at p, 0 when none */
+static int js_space(const unsigned char *p) {
+  if (*p == ' ' || (*p >= 9 && *p <= 13)) return 1;
+  if (p[0] == 0xc2 && p[1] == 0xa0) return 2;
+  if (p[0] == 0xe1 && p[1] == 0x9a && p[2] == 0x80) return 3;
+  if (p[0] == 0xe2 && p[1] == 0x80 && ((p[2] >= 0x80 && p[2] <= 0x8a) || p[2] == 0xa8 || p[2] == 0xa9 || p[2] == 0xaf)) return 3;
+  if (p[0] == 0xe2 && p[1] == 0x81 && p[2] == 0x9f) return 3;
+  if (p[0] == 0xe3 && p[1] == 0x80 && p[2] == 0x80) return 3;
+  if (p[0] == 0xef && p[1] == 0xbb && p[2] == 0xbf) return 3;
+  return 0;
+}
+/* everything the addon says about a stream, as the web joins it: spaces folded, at most 600 UTF-16 units */
+void best_stream_info(const Stream *s, char *out, size_t cap) {
+  char raw[1200]; snprintf(raw, sizeof raw, "%s %s %s", s->name[0] ? s->name : s->addon, s->title, s->filename);
+  size_t o = 0; int units = 0, sp = 0; const unsigned char *p = (const unsigned char *)raw;
+  while (*p == ' ' || js_space(p)) p += js_space(p);
+  while (*p && o + 5 < cap) {
+    int k = js_space(p); if (k) { sp = 1; p += k; continue; }
+    if (sp) { if (units >= 600) break; out[o++] = ' '; units++; sp = 0; }
+    int len = *p < 0x80 ? 1 : *p >= 0xf0 ? 4 : *p >= 0xe0 ? 3 : *p >= 0xc0 ? 2 : 1, u = len == 4 ? 2 : 1;
+    if (units + u > 600) break;
+    for (int i = 0; i < len && p[i]; i++) out[o++] = (char)p[i];
+    p += len; units += u;
+  }
+  out[o] = 0;
+}
+
+const char *best_res_of(const char *label) {
+  char s[2048]; lower(label, s, sizeof s);
+  if (strstr(s, "2160p") || has_word(s, "4k") || has_word(s, "uhd")) return "4K";
+  if (strstr(s, "1440p") || has_word(s, "2k")) return "1440p";
+  if (strstr(s, "1080p") || has_word(s, "fhd")) return "1080p";
+  if (strstr(s, "720p")) return "720p";
+  if (strstr(s, "576p") || strstr(s, "480p") || has_word(s, "sd")) return "SD";
+  return "";
+}
+void best_hdr_of(const char *label, char *out, size_t cap) {
+  char s[2048]; lower(label, s, sizeof s); blank(s, "._");
+  int dv = has_word(s, "dv") || has_word(s, "dovi") || has_word(s, "dolby vision") || has_word(s, "dolbyvision");
+  const char *h = (strstr(s, "hdr10+") || strstr(s, "hdr10 +") || strstr(s, "hdr10plus") || strstr(s, "hdr10 plus") || find_w(s, "hdr10p", 0, 1)) ? "HDR10+"
+    : has_word(s, "hdr10") ? "HDR10" : (has_word(s, "hdr") && !dv) ? "HDR" : has_word(s, "hlg") ? "HLG" : "";
+  snprintf(out, cap, "%s%s%s", dv ? "DV" : "", dv && *h ? " · " : "", h);
+}
+/* "dts", the web's " ?-?", then what must follow (and a word end after it when asked) */
+static int dts_then(const char *s, const char *tail, int end) {
+  size_t n = strlen(tail);
+  for (const char *p = s; (p = strstr(p, "dts")); p++) { const char *q = opt_sp_dash(p + 3); if (!strncmp(q, tail, n) && (!end || !wch((unsigned char)q[n]))) return 1; }
+  return 0;
+}
+static int dts_hd_ma(const char *s) {
+  for (const char *p = s; (p = strstr(p, "dts")); p++) { const char *q = opt_sp_dash(p + 3); if (!strncmp(q, "hd", 2) && !strncmp(opt_sp_dash(q + 2), "ma", 2)) return 1; }
+  return 0;
+}
+/* "dd" / "aac" then " ?[257] ?[01]" (5.1 written as 5 1, 51...), with the web's word ends when asked */
+static int codec_ch(const char *s, const char *w, int bounds) {
+  size_t n = strlen(w);
+  for (const char *p = s; (p = strstr(p, w)); p++) {
+    if (bounds && p > s && wch((unsigned char)p[-1])) continue;
+    const char *q = p + n; if (*q == ' ') q++; if (*q != '2' && *q != '5' && *q != '7') continue; q++; if (*q == ' ') q++; if (*q != '0' && *q != '1') continue; q++;
+    if (!bounds || !wch((unsigned char)*q)) return 1;
+  }
+  return 0;
+}
+void best_audio_of(const char *label, char *out, size_t cap) {
+  char s[2048]; lower(label, s, sizeof s); blank(s, "._");
+  const char *au = "";
+  if (strstr(s, "truehd")) au = "TrueHD"; else if (dts_then(s, "x", 1)) au = "DTS:X"; else if (dts_hd_ma(s) || dts_then(s, "ma", 1)) au = "DTS-HD MA";
+  else if (dts_then(s, "hd", 0)) au = "DTS-HD"; else if (has_word(s, "dts")) au = "DTS";
+  else if (find_w(s, "ddp", 1, 0) || strstr(s, "dd+") || strstr(s, "eac3") || strstr(s, "e-ac3") || strstr(s, "eac-3") || strstr(s, "e-ac-3") || strstr(s, "dolby digital plus")) au = "EAC3";
+  else if (has_word(s, "dd") || codec_ch(s, "dd", 1) || has_word(s, "ac3") || has_word(s, "ac-3") || strstr(s, "dolby digital")) au = "AC3";
+  else if (has_word(s, "aac") || codec_ch(s, "aac", 0) || strstr(s, "aac2")) au = "AAC"; else if (has_word(s, "opus")) au = "Opus"; else if (has_word(s, "flac")) au = "FLAC"; else if (has_word(s, "mp3")) au = "MP3";
+  int atmos = strstr(s, "atmos") != NULL; char a[24]; snprintf(a, sizeof a, "%s%s%s", au, *au && atmos ? " " : "", atmos ? "Atmos" : "");
+  /* channels: the first "5 1" not glued to another number */
+  char ch[8] = "";
+  if (*a) for (const char *p = s; *p; p++) if (p[0] >= '1' && p[0] <= '9' && (p == s || (!is_dig((unsigned char)p[-1]) && p[-1] != '.')) && (p[1] == ' ' || p[1] == '.') && (p[2] == '0' || p[2] == '1') && !is_dig((unsigned char)p[3])) { snprintf(ch, sizeof ch, "%c.%c", p[0], p[2]); break; }
+  snprintf(out, cap, "%s%s%s", a, ch[0] ? " " : "", ch);
+}
+/* the file size in MB from "29.26 GB", "700 MB", "1,4 GiB" */
+static double size_mb(const char *t) {
+  for (const char *p = t; *p; p++) {
+    if (!is_dig((unsigned char)*p)) continue;
+    const char *q = p; while (is_dig((unsigned char)*q)) q++;
+    if ((*q == '.' || *q == ',') && is_dig((unsigned char)q[1])) { q++; while (is_dig((unsigned char)*q)) q++; }
+    const char *e = q; while (*e == ' ') e++;
+    char u[4] = { 0 }; for (int i = 0; i < 3 && e[i]; i++) u[i] = (char)(e[i] >= 'A' && e[i] <= 'Z' ? e[i] + 32 : e[i]);
+    int ul = !strncmp(u, "gb", 2) ? 2 : !strncmp(u, "gib", 3) ? 3 : !strncmp(u, "mb", 2) ? 2 : !strncmp(u, "mib", 3) ? 3 : 0;
+    if (!ul || wch((unsigned char)e[ul])) continue;
+    char num[48]; size_t n = (size_t)(q - p) < sizeof num - 1 ? (size_t)(q - p) : sizeof num - 1; memcpy(num, p, n); num[n] = 0; char *c = strchr(num, ','); if (c) *c = '.';
+    double v = atof(num); return u[0] == 'g' ? v * 1024 : v;
+  }
+  return 0;
+}
+static int ci_eq(const char *p, const char *w) { for (; *w; p++, w++) { char c = *p >= 'A' && *p <= 'Z' ? *p + 32 : *p; if (c != *w) return 0; } return 1; }
+static int num_at(const char *p) { long v = 0; while (is_dig((unsigned char)*p) && v < 100000000) v = v * 10 + (*p++ - '0'); return (int)v; }
+/* the seeds a torrent stream announces ("👤 484", "Seeders: 12", "12 seeds"), -1 when it does not say */
+static int seeds_of(const char *t) {
+  for (const char *p = t; (p = strstr(p, "\xf0\x9f\x91\xa4")); p++) { const char *q = p + 4; while (*q == ' ') q++; if (is_dig((unsigned char)*q)) return num_at(q); }
+  for (const char *p = t; *p; p++) {
+    if (!ci_eq(p, "seed") || (p > t && wch((unsigned char)p[-1]))) continue;
+    const char *q = p + 4; if (ci_eq(q, "er")) q += 2; if (*q == 's' || *q == 'S') q++; while (*q == ' ') q++; if (*q == ':' || *q == '=') q++; while (*q == ' ') q++;
+    if (is_dig((unsigned char)*q)) return num_at(q);
+  }
+  for (const char *p = t; *p; p++) { if (!is_dig((unsigned char)*p)) continue; const char *q = p; while (is_dig((unsigned char)*q)) q++; while (*q == ' ') q++; if (ci_eq(q, "seed")) return num_at(p); }
+  return -1;
+}
+static int res_n(const char *r) { return !strcmp(r, "4K") ? 2160 : !strcmp(r, "1440p") ? 1440 : !strcmp(r, "1080p") ? 1080 : !strcmp(r, "720p") ? 720 : !strcmp(r, "SD") ? 480 : 0; }
+static double by_res(int r, double r2160, double r1440, double r1080, double r720, double r480) { return r == 2160 ? r2160 : r == 1440 ? r1440 : r == 1080 ? r1080 : r == 720 ? r720 : r480; }
+/* Number#toFixed(1): half-way cases round up on the exact decimal value, as the web shows sizes */
+static void to_fixed1(double v, char *out, size_t cap) {
+  char b[64]; snprintf(b, sizeof b, "%.20f", v); char *d = strchr(b, '.'); if (!d) { snprintf(out, cap, "%s.0", b); return; }
+  int up = d[2] >= '5'; d[2] = 0;
+  if (up) { char *p = d + 1; for (;;) { if (p == d) p--; if (p < b) { memmove(b + 1, b, strlen(b) + 1); b[0] = '1'; break; } if (*p == '9') { *p = '0'; p--; continue; } (*p)++; break; } }
+  snprintf(out, cap, "%s", b);
+}
+
+/* another track named beside a DTS / TrueHD one ("DTS-HD MA 5.1 + AC3", "TrueHD Atmos / DD 5.1"): the file has a
+   sound this TV plays */
+static int other_audio(const char *l) {
+  return find_w(l, "ddp", 1, 0) || strstr(l, "dd+") || strstr(l, "eac3") || strstr(l, "e ac3") || strstr(l, "dolby digital") || has_word(l, "dd") || codec_ch(l, "dd", 1)
+    || has_word(l, "ac3") || has_word(l, "aac") || codec_ch(l, "aac", 0) || has_word(l, "mp3") || has_word(l, "opus") || has_word(l, "flac");
+}
+
+/* ---- the score ------------------------------------------------------------------------------------ */
+/* One stream for this TV, as one sum: the picture it gives here (capped at the panel), its source, audio and
+   bitrate, minus a little for whatever needs the TV's fallback (Dolby Vision on a panel without it plays its HDR
+   / SDR base, HDR is tone-mapped, a DTS / TrueHD track leans on the file's other tracks), plus how surely it
+   plays (a debrid file is there, a torrent has its seeds). Only what can't play at all is left out: cams, debrid
+   files not cached yet, torrents without peers. */
+/* the languages a stream's text names (its audio, as addons write it: words, short tags, flags), against the user's
+   audio and subtitle languages from the settings: a stream in the user's language first; one naming only others (a
+   Russian dub for a French viewer) last, played only when nothing else can be; none named, the original: as it was */
+static char prefAudio[8], prefSubs[8];
+void best_set_langs(const char *audio, const char *subs) { snprintf(prefAudio, sizeof prefAudio, "%s", audio ? audio : ""); snprintf(prefSubs, sizeof prefSubs, "%s", subs ? subs : ""); }
+static const struct { const char *code, *w[9], *flag, *flag2; } LANG[] = {
+  { "eng", { "english", "eng", NULL }, "\xf0\x9f\x87\xac\xf0\x9f\x87\xa7", "\xf0\x9f\x87\xba\xf0\x9f\x87\xb8" },
+  { "fre", { "french", "fre", "fra", "vf", "vff", "vfq", "vfi", "truefrench", "francais" }, "\xf0\x9f\x87\xab\xf0\x9f\x87\xb7", NULL },
+  { "spa", { "spanish", "spa", "esp", "castellano", "latino", "espanol", NULL }, "\xf0\x9f\x87\xaa\xf0\x9f\x87\xb8", "\xf0\x9f\x87\xb2\xf0\x9f\x87\xbd" },
+  { "ger", { "german", "ger", "deu", "deutsch", NULL }, "\xf0\x9f\x87\xa9\xf0\x9f\x87\xaa", NULL },
+  { "ita", { "italian", "ita", "italiano", NULL }, "\xf0\x9f\x87\xae\xf0\x9f\x87\xb9", NULL },
+  { "por", { "portuguese", "por", "dublado", "portugues", NULL }, "\xf0\x9f\x87\xb5\xf0\x9f\x87\xb9", "\xf0\x9f\x87\xa7\xf0\x9f\x87\xb7" },
+  { "rus", { "russian", "rus", NULL }, "\xf0\x9f\x87\xb7\xf0\x9f\x87\xba", NULL },
+  { "ukr", { "ukrainian", "ukr", NULL }, "\xf0\x9f\x87\xba\xf0\x9f\x87\xa6", NULL },
+  { "pol", { "polish", "pol", "lektor", NULL }, "\xf0\x9f\x87\xb5\xf0\x9f\x87\xb1", NULL },
+  { "tur", { "turkish", "tur", NULL }, "\xf0\x9f\x87\xb9\xf0\x9f\x87\xb7", NULL },
+  { "ara", { "arabic", "ara", NULL }, "\xf0\x9f\x87\xb8\xf0\x9f\x87\xa6", NULL },
+  { "dut", { "dutch", "nld", NULL }, "\xf0\x9f\x87\xb3\xf0\x9f\x87\xb1", NULL },
+  { "hin", { "hindi", "hin", NULL }, "\xf0\x9f\x87\xae\xf0\x9f\x87\xb3", NULL },
+  { "jpn", { "japanese", "jpn", NULL }, "\xf0\x9f\x87\xaf\xf0\x9f\x87\xb5", NULL },
+  { "kor", { "korean", "kor", NULL }, "\xf0\x9f\x87\xb0\xf0\x9f\x87\xb7", NULL },
+  { "chi", { "chinese", "chi", "mandarin", NULL }, "\xf0\x9f\x87\xa8\xf0\x9f\x87\xb3", NULL },
+  { "swe", { "swedish", "swe", NULL }, "\xf0\x9f\x87\xb8\xf0\x9f\x87\xaa", NULL },
+  { "heb", { "hebrew", "heb", NULL }, "\xf0\x9f\x87\xae\xf0\x9f\x87\xb1", NULL },
+  /* (no short tag that is also a word in titles: dan, fin, nor, ind, per, vie, rum, gre, bul, ces, romana) */
+  { "hun", { "hungarian", "hun", "magyar", NULL }, "\xf0\x9f\x87\xad\xf0\x9f\x87\xba", NULL },
+  { "cze", { "czech", "cze", "cz", "cesky", NULL }, "\xf0\x9f\x87\xa8\xf0\x9f\x87\xbf", NULL },
+  { "slo", { "slovak", "slk", "slovensky", NULL }, "\xf0\x9f\x87\xb8\xf0\x9f\x87\xb0", NULL },
+  { "rum", { "romanian", "ron", NULL }, "\xf0\x9f\x87\xb7\xf0\x9f\x87\xb4", NULL },
+  { "gre", { "greek", "ell", NULL }, "\xf0\x9f\x87\xac\xf0\x9f\x87\xb7", NULL },
+  { "bul", { "bulgarian", NULL }, "\xf0\x9f\x87\xa7\xf0\x9f\x87\xac", NULL },
+  { "srp", { "serbian", "srp", "srpski", NULL }, "\xf0\x9f\x87\xb7\xf0\x9f\x87\xb8", NULL },
+  { "hrv", { "croatian", "hrv", "hrvatski", NULL }, "\xf0\x9f\x87\xad\xf0\x9f\x87\xb7", NULL },
+  { "dan", { "danish", "dansk", NULL }, "\xf0\x9f\x87\xa9\xf0\x9f\x87\xb0", NULL },
+  { "nor", { "norwegian", "norsk", NULL }, "\xf0\x9f\x87\xb3\xf0\x9f\x87\xb4", NULL },
+  { "fin", { "finnish", "suomi", NULL }, "\xf0\x9f\x87\xab\xf0\x9f\x87\xae", NULL },
+  { "ind", { "indonesian", NULL }, "\xf0\x9f\x87\xae\xf0\x9f\x87\xa9", NULL },
+  { "vie", { "vietnamese", NULL }, "\xf0\x9f\x87\xbb\xf0\x9f\x87\xb3", NULL },
+  { "per", { "persian", "farsi", NULL }, "\xf0\x9f\x87\xae\xf0\x9f\x87\xb7", NULL } };
+#define NLANG (int)(sizeof LANG / sizeof LANG[0])
+typedef unsigned long long LangSet; /* one bit a language (32 of them now: past an int's bits soon) */
+static LangSet langs_named(const char *raw, const char *l) { LangSet m = 0; for (int i = 0; i < NLANG; i++) { int f = 0;
+    for (int k = 0; k < 9 && LANG[i].w[k] && !f; k++) if (has_word(l, LANG[i].w[k])) f = 1;
+    if (!f && LANG[i].flag && strstr(raw, LANG[i].flag)) f = 1; if (!f && LANG[i].flag2 && strstr(raw, LANG[i].flag2)) f = 1;
+    if (f) m |= 1ull << i; } return m; }
+static int lang_index(const char *code) { for (int i = 0; i < NLANG; i++) if (code && !strcmp(LANG[i].code, code)) return i; return -1; }
+static int lang_score(const char *raw, const char *l) { int ia = lang_index(prefAudio), is = lang_index(prefSubs), ie = lang_index("eng"); if (ia < 0) ia = ie; /* (no audio language set: English) */
+  LangSet m = langs_named(raw, l); int multi = has_word(l, "multi") || has_word(l, "dual") || strstr(l, "multi audio") != NULL, sc = 0;
+  if (ia >= 0 && m) { if (m & (1ull << ia)) sc += 60; else if (ie >= 0 && (m & (1ull << ie))) sc += 0; else if (multi) sc -= 20; else sc -= 160; } /* the user's audio named: first; else English (as one with none named, the original); only others named: last */
+  if (is >= 0 && is != ia) { const char *sw[] = { "vost", "vostfr", "subbed", "subs", "sub", NULL }; int subWord = 0; for (int k = 0; sw[k]; k++) if (has_word(l, sw[k])) subWord = 1; if (subWord && (m & (1ull << is))) sc += 12; }
+  return sc; }
+#ifdef SB_PHONE
+static int panel_res(void) { static int pl; if (!pl) { extern int plat_panel_lines(void); int L = plat_panel_lines(); pl = L >= 2000 ? 2160 : L >= 1000 ? 1080 : L > 0 ? 720 : 1080; } return pl; } /* the phone's panel as a resolution class */
+#endif
+static int rateDl; /* choosing for a download: a torrent need not keep up in real time, but its swarm must last the whole file */
+static int rate(const Stream *s, const TvCaps *c, double mbps, double dur, BestRate *o, int *resOut) {
+  char t[2048], l[2048]; best_stream_info(s, t, sizeof t); lower(t, l, sizeof l); blank(l, "._-[]()");
+  int p2p = s->p2p;
+  static const char *CAM[] = { "cam", "camrip", "hdcam", "ts", "hdts", "telesync", "tc", "telecine", "scr", "screener", "dvdscr" };
+  for (size_t i = 0; i < sizeof CAM / sizeof CAM[0]; i++) if (has_word(l, CAM[i])) return 0;
+  if (!p2p) { char nt[1100], raw[1100]; snprintf(raw, sizeof raw, "%s %s", s->name, s->title); lower(raw, nt, sizeof nt); /* debrid, not in the cloud yet */
+    if (strstr(nt, "download]") || strstr(nt, "uncached") || strstr(nt, "needs to download") || strstr(nt, "\xe2\x8f\xb3")) return 0; }
+  int sd = p2p ? seeds_of(t) : -1; if (p2p && sd >= 0 && sd < (rateDl ? 15 : 8)) return 0; /* a torrent needs a healthy swarm: a thin one stalls */
+  const char *rl = best_res_of(t); int r = res_n(rl), rr = r ? r : 720; char hd[32], au[32], a0[32]; best_hdr_of(t, hd, sizeof hd); best_audio_of(t, au, sizeof au);
+  snprintf(a0, sizeof a0, "%s", au); { char *sp = strchr(a0, ' '); if (sp) *sp = 0; }
+  if (r > (c->maxRes ? c->maxRes : 1080)) return 0; /* above the panel's resolution: the TV fails to play it */
+#ifdef SB_PHONE
+  int panel = panel_res(); /* a phone: the picture as its own panel shows it (a 720-line screen gains nothing from 1080p but a little sharpness) */
+  int over = rr > panel; double sc = by_res(over ? panel : rr, 400, 340, 300, 200, 80) + (over ? 6 : 0);
+#else
+  int over = 0; double sc = by_res(rr, 400, 340, 300, 200, 80);
+#endif
+  if (!r) sc -= 40;
+  sc += (over ? 0.5 : 1) * (strstr(l, "remux") ? 30 : (strstr(l, "bluray") || strstr(l, "blu ray") || strstr(l, "bdrip") || strstr(l, "brrip")) ? 24 : (strstr(l, "webdl") || strstr(l, "web dl") || strstr(l, "webrip") || has_word(l, "web")) ? 20 : strstr(l, "hdtv") ? 4 : 0); /* (above the panel: the source counts half) */
+  int dv = has_word(l, "dv") || has_word(l, "dovi") || has_word(l, "dolby vision");
+#ifdef SB_PHONE
+  if (dv && !c->dv && !strstr(l, "hdr")) return 0; /* Dolby Vision alone (profile 5): no HDR10 base to fall back on, its colours come out purple and green */
+  if (hd[0]) sc += c->hdr ? 12 : -40; /* no HDR screen: the SDR file of the same picture first (HDR only when nothing else) */
+#else
+  if (hd[0]) sc += c->hdr ? 12 : -10;
+#endif
+  if (dv) sc += c->dv ? 20 : (strstr(l, "hdr") ? -5 : -30); /* the TV's own Dolby Vision first; without it the HDR base plays */
+  int dm = best_dts_mode(), dts = dm != 2 && strstr(au, "DTS") != NULL, thd = strstr(au, "TrueHD") != NULL, cdts = dm == 1 ? 0 : c->dts; /* DTS: Off, neither favoured nor avoided; Convert, it will be; Auto, what was found out */
+  int mute = ((dts && !cdts && dm != 1) || (thd && !c->truehd)) && !other_audio(l); /* nothing else named: the sound is the one this TV can't decode (DTS set to Convert: it will be) */
+  if ((dts && cdts) || (thd && c->truehd)) sc += 16; /* the TV decodes the special track: the best sound it can give */
+  else if (dts || thd) sc -= 45;                       /* the file's other tracks have to stand in */
+  else if (!strcmp(a0, "EAC3")) sc += 14; else if (!strcmp(a0, "AC3")) sc += 12; else if (!strcmp(a0, "AAC")) sc += 8; else if (!strcmp(a0, "Opus") || !strcmp(a0, "FLAC")) sc -= 15;
+  if (strstr(au, "Atmos")) sc += 6;
+  int nodec = 0; if (has_word(l, "av1") && !c->av1) { sc -= 200; nodec = 1; } /* nothing to fall back to: the picture won't decode */
+  { int ten = has_word(l, "10bit") || strstr(l, "10 bit") || has_word(l, "hi10") || has_word(l, "hi10p"), hevc = has_word(l, "x265") || has_word(l, "hevc") || has_word(l, "h265") || strstr(l, "h 265");
+    int avc = has_word(l, "x264") || has_word(l, "h264") || strstr(l, "h 264") || has_word(l, "avc");
+    if ((has_word(l, "hi10") || has_word(l, "hi10p") || (ten && avc)) && !hevc) return 0; } /* 10-bit H.264 (Hi10P, common in anime): no TV's decoder takes it, the player only fails */
+  sc += lang_score(t, l); /* the user's languages (settings) */
+  double mb = size_mb(t), need = mb ? mb * 8 / (dur * 60) : by_res(rr, 22, 12, 8, 4, 2);
+#ifdef SB_PHONE
+  if (mb) { int pr = over ? panel : rr; double ref = by_res(pr, 20, 10, 6, 3, 1.5), ok = ref * 1.5; /* a phone: bitrate counts up to what its panel shows (1.5x a typical file at that size); beyond twice that it only costs data and buffering */
+    sc += fmin(18, fmin(need, ok) / ref * 8); if (need > ok * 2) sc -= fmin(45, (need - ok * 2) * 1.5); }
+#else
+  if (mb) sc += fmin(18, need / by_res(rr, 20, 10, 6, 3, 1.5) * 8); /* more bitrate for the same picture: better */
+#endif
+  double line = mbps ? mbps : (p2p ? 40 : 100), cap = p2p && !rateDl ? fmin(line, sd > 0 ? 2 + sd * 0.8 : 4) : line; /* a swarm gives roughly 0.8 Mbps a seed (1.5 promised too much: an anime swarm far away, a few seeds, crawled) (a download: only its size counts) */
+  if (rateDl) sc += p2p ? (sd < 0 ? -140 : fmin(70, 10 * log(sd + 1) / M_LN2) - 45) : 55; /* a download: a big swarm finishes, a direct link more surely */
+  else sc += p2p ? (sd < 0 ? -80 : fmin(45, 7 * log(sd + 1) / M_LN2) - 35) : 40; /* seeds unknown: its health can't be told */
+  if (!o) return 1;
+  o->s = s; o->sc = sc; o->need = need; o->cap = cap; o->mute = mute; o->nodec = nodec; if (resOut) *resOut = r;
+  /* the summary: "4K  ·  DV HDR10  ·  EAC3 Atmos 5.1  ·  29.3 GB  ·  484 seeds" */
+  char parts[5][48]; int np = 0;
+  if (*rl) snprintf(parts[np++], 48, "%s", rl);
+  if (hd[0]) { char h2[32]; size_t k = 0; for (const char *p = hd; *p && k + 1 < sizeof h2; ) { if (!strncmp(p, " \xc2\xb7 ", 4)) { h2[k++] = ' '; p += 4; } else h2[k++] = *p++; } h2[k] = 0; snprintf(parts[np++], 48, "%s", h2); }
+  if (au[0]) snprintf(parts[np++], 48, "%s", au);
+  if (mb) { if (mb >= 1024) { char f[32]; to_fixed1(mb / 1024, f, sizeof f); snprintf(parts[np++], 48, "%s GB", f); } else snprintf(parts[np++], 48, "%.0f MB", floor(mb + 0.5)); }
+  if (p2p) { if (sd >= 0) { char n[16]; snprintf(n, sizeof n, "%d", sd); snprintf(parts[np++], 48, "%s", T1("{n} seeds", "n", n)); } } else snprintf(parts[np++], 48, "%s", T("Direct"));
+  size_t k = 0; o->sum[0] = 0; for (int i = 0; i < np; i++) k += snprintf(o->sum + k, k < sizeof o->sum ? sizeof o->sum - k : 0, "%s%s", i ? "  \xc2\xb7  " : "", parts[i]);
+  return 1;
+}
+static const TvCaps FALLBACK = { 1080, 0, 0, 0, 0, 0 };
+/* c NULL: the kept caps, else a 1080p panel (a caller asking only for the summary line); mbps < 0: the measured speed */
+int best_rate(const Stream *s, const TvCaps *c, double mbps, double durMin, BestRate *out) {
+  if (!c) c = best_caps(); if (!c) c = &FALLBACK; if (mbps < 0) mbps = best_net_mbps();
+  return rate(s, c, mbps, durMin, out, NULL); }
+/* what a list shows of a stream (the player's sources): its facts, size and source, the release's name, and the one
+   thing that matters most for this TV, if any (out: it won't play here at all). Read as the score reads it */
+static const char *const LANG2[] = { "EN", "FR", "ES", "DE", "IT", "PT", "RU", "UK", "PL", "TR", "AR", "NL", "HI", "JA", "KO", "ZH", "SV", "HE", "HU", "CS", "SK", "RO", "EL", "BG", "SR", "HR", "DA", "NO", "FI", "ID", "VI", "FA" };
+static void rel_name(const Stream *s, char *out, size_t cap) { /* the release: the file's name, else the title's line most like one (dots, digits, no spaces) */
+  if (s->filename[0]) { snprintf(out, cap, "%s", s->filename); return; }
+  const char *best = NULL; int bl = 0, bs = -1; const char *p = s->title;
+  while (*p) { const char *e = strchr(p, '\n'); int l = e ? (int)(e - p) : (int)strlen(p), sc = 0, sp = 0; for (int i = 0; i < l; i++) { if (p[i] == '.') sc += 2; else if (is_dig((unsigned char)p[i])) sc++; else if (p[i] == ' ') sp++; }
+    sc -= sp * 2; if (l > 8 && sc > bs) { bs = sc; best = p; bl = l; } if (!e) break; p = e + 1; }
+  if (best && bs >= 4) { snprintf(out, cap, "%.*s", bl, best); return; }
+  out[0] = 0; }
+void best_facts(const Stream *s, const TvCaps *c, double mbps, double durMin, BestFacts *f) {
+  memset(f, 0, sizeof *f); if (!c) c = best_caps(); if (!c) c = &FALLBACK; if (mbps < 0) mbps = best_net_mbps(); if (durMin <= 0) durMin = 110;
+  char t[2048], l[2048]; best_stream_info(s, t, sizeof t); lower(t, l, sizeof l); blank(l, "._-[]()");
+  const char *rl = best_res_of(t); int r = res_n(rl); char hd[32], au[32]; best_hdr_of(t, hd, sizeof hd); best_audio_of(t, au, sizeof au);
+  { char h2[32]; size_t k = 0; for (const char *p = hd; *p && k + 1 < sizeof h2; ) { if (!strncmp(p, " \xc2\xb7 ", 4)) { h2[k++] = ' '; p += 4; } else h2[k++] = *p++; } h2[k] = 0; snprintf(hd, sizeof hd, "%s", h2); }
+  /* the languages it names (as the score reads them), three at most; "Multi" when it says so and names none */
+  char lg[32] = ""; { LangSet m = langs_named(t, l); int n = 0; size_t o = 0; for (int i = 0; i < NLANG && n < 3; i++) if (m & (1ull << i)) { o += snprintf(lg + o, sizeof lg - o, "%s%s", n ? " " : "", LANG2[i]); n++; }
+    if (!n && (has_word(l, "multi") || has_word(l, "dual"))) snprintf(lg, sizeof lg, "Multi"); }
+  const char *parts[4]; int np = 0; if (*rl) parts[np++] = rl; if (hd[0]) parts[np++] = hd; if (au[0]) parts[np++] = au; if (lg[0]) parts[np++] = lg;
+  { size_t k = 0; for (int i = 0; i < np; i++) k += snprintf(f->facts + k, k < sizeof f->facts ? sizeof f->facts - k : 0, "%s%s", i ? "  \xc2\xb7  " : "", parts[i]); }
+  double mb = size_mb(t); if (!mb && s->size > 0) mb = s->size / 1048576.0; int p2p = s->p2p, sd = p2p ? seeds_of(t) : -1;
+  { char sz[24] = "", so[48]; if (mb >= 1024) { char g[16]; to_fixed1(mb / 1024, g, sizeof g); snprintf(sz, sizeof sz, "\xe2\x80\x8e%s GB", g); } else if (mb > 0) snprintf(sz, sizeof sz, "\xe2\x80\x8e%.0f MB", floor(mb + 0.5)); /* (a left-to-right mark first: in a right-to-left line the figure and its unit stay "61.7 GB") */
+    if (p2p) { if (sd >= 0) { char n[16]; snprintf(n, sizeof n, "%d", sd); snprintf(so, sizeof so, "%s", T1("{n} seeds", "n", n)); } else snprintf(so, sizeof so, "%s", T("Torrents")); } else snprintf(so, sizeof so, "%s", T("Direct"));
+    snprintf(f->meta, sizeof f->meta, "%s%s%s", sz, sz[0] ? "  \xc2\xb7  " : "", so); }
+  rel_name(s, f->rel, sizeof f->rel);
+  /* what matters most here, first: what won't play at all, then what is slow or loses something */
+  static const char *CAM[] = { "cam", "camrip", "hdcam", "hdts", "telesync", "telecine", "screener", "dvdscr" };
+  int cam = 0; for (size_t i = 0; i < sizeof CAM / sizeof CAM[0]; i++) if (has_word(l, CAM[i])) cam = 1;
+  int ten = has_word(l, "10bit") || strstr(l, "10 bit") || has_word(l, "hi10") || has_word(l, "hi10p"), hevc = has_word(l, "x265") || has_word(l, "hevc") || has_word(l, "h265") || strstr(l, "h 265");
+  int avc = has_word(l, "x264") || has_word(l, "h264") || strstr(l, "h 264") || has_word(l, "avc"), hi10 = (has_word(l, "hi10") || has_word(l, "hi10p") || (ten && avc)) && !hevc;
+  int maxr = c->maxRes ? c->maxRes : 1080;
+  int unc = 0; if (!p2p) { char nt[1100], raw[1100]; snprintf(raw, sizeof raw, "%s %s", s->name, s->title); lower(raw, nt, sizeof nt); unc = strstr(nt, "download]") || strstr(nt, "uncached") || strstr(nt, "needs to download") || strstr(nt, "\xe2\x8f\xb3"); }
+  int dm = best_dts_mode(), dts = dm != 2 && strstr(au, "DTS") != NULL, thd = strstr(au, "TrueHD") != NULL, cdts = dm == 1 ? 1 : c->dts, mute = ((dts && !cdts) || (thd && !c->truehd)) && !other_audio(l);
+  double need = mb ? mb * 8 / (durMin * 60) * 1.3 : 0, line = mbps > 0 ? mbps : 0, cap = p2p ? (line > 0 ? fmin(line, sd > 0 ? 2 + sd * 0.8 : 4) : (sd > 0 ? 2 + sd * 0.8 : 0)) : line;
+  char rb[16]; snprintf(rb, sizeof rb, "%dp", maxr >= 2160 ? 2160 : maxr);
+  if (cam) { f->out = 1; snprintf(f->warn, sizeof f->warn, "%s", T("Camera recording")); }
+  else if (hi10) { f->out = 1; snprintf(f->warn, sizeof f->warn, "%s", T("The video format isn\xe2\x80\x99t supported by this TV")); }
+  else if (r > maxr) { f->out = 1; snprintf(f->warn, sizeof f->warn, "%s", T1("Above your TV\xe2\x80\x99s {r}", "r", rb)); }
+  else if (has_word(l, "av1") && !c->av1) { f->out = 1; snprintf(f->warn, sizeof f->warn, "%s", T("This TV can\xe2\x80\x99t play AV1 video")); }
+  else if (unc) snprintf(f->warn, sizeof f->warn, "%s", T("Not cached yet: slow to start"));
+  else if (p2p && sd >= 0 && sd < 8) snprintf(f->warn, sizeof f->warn, "%s", T("Few seeds: slow to start")); /* (how many is in its meta; a number here would need each language's plural forms) */
+  else if (mute) snprintf(f->warn, sizeof f->warn, "%s", dts ? T("DTS sound: this TV can\xe2\x80\x99t play it") : T("This TV can\xe2\x80\x99t play this video\xe2\x80\x99s sound (DTS or TrueHD)"));
+  else if (need > 0 && cap > 0 && need > cap) snprintf(f->warn, sizeof f->warn, "%s", T("Too heavy for your internet speed"));
+}
+/* The TV's own resolution first (never above it), lower pictures only after it, and only among streams the line
+   carries without buffering: a file's average bitrate (its size over the running time) plus 30% headroom must
+   fit the speed measured when the setting was switched on. The first resolution with such a stream wins (its
+   best one); when nothing fits anywhere, the lightest stream at the TV's resolution. */
+const Stream *best_pick(const Stream *const *list, int n, double durMin, const TvCaps *c, double mbps, BestRate *out) {
+  if (!c) { c = best_caps(); if (!c) c = &FALLBACK; }
+  if (mbps < 0) mbps = best_net_mbps();
+  if (durMin <= 0) durMin = 100;
+  int mx = c->maxRes ? c->maxRes : 1080;
+  BestRate *rs = n > 0 ? malloc(n * sizeof *rs) : NULL; int *tk = n > 0 ? malloc(n * sizeof *tk) : NULL, m = 0;
+  for (int i = 0; i < n; i++) { int res = 0; int ok = list[i] && list[i]->url[0] && rate(list[i], c, mbps, durMin, &rs[m], &res);
+    if (getenv("SB_BESTLOG") && list[i]) { char t[300]; best_stream_info(list[i], t, sizeof t); for (char *q = t; *q; q++) if (*q == '\n') *q = ' '; fprintf(stderr, "[bestlog] %s %s | %.170s%s\n", list[i]->p2p ? "p2p" : "direct", ok ? "ok" : "out", t, ok ? "" : ""); if (ok) fprintf(stderr, "[bestlog]   need %.1f cap %.1f mute %d sc %.0f res %d\n", rs[m].need, rs[m].cap, rs[m].mute, rs[m].sc, res); }
+#ifdef SB_PHONE
+    if (!ok) continue; { int pr = panel_res(); tk[m++] = res >= pr ? 0 : res ? 1 + (pr - res) : 1 + pr; } } /* a phone: its panel's resolution and above in the first tier, the score choosing among them */
+#else
+    if (!ok) continue; tk[m++] = res == mx ? 0 : 1 + (mx - res); }
+#endif
+  { int nd = 0, np = 0, ud = 0, up = 0; for (int i = 0; i < n; i++) if (list[i]) { if (list[i]->p2p) np++; else nd++; } for (int i = 0; i < m; i++) { if (rs[i].s->p2p) up++; else ud++; } fprintf(stderr, "[best] from %d direct (%d can play) and %d torrents (%d can play)\n", nd, ud, np, up); } /* (what it had to choose from: a torrent picked with no direct one that can play) */
+  { /* what can play here first: a picture this TV won't decode (nodec: AV1 without its decoder) is left out while anything
+       else can play (the resolution tiers below took such a file at the TV's own resolution over a playable one a tier
+       down: a stream that never starts). Sound it can't decode (mute: DTS / TrueHD) stays a soft preference only: it is
+       converted here and plays (the user's rule: no hard rules where there is a fallback) */
+    int ok = 0; for (int i = 0; i < m; i++) if (!rs[i].nodec) ok = 1;
+    if (ok) { int w = 0; for (int i = 0; i < m; i++) if (!rs[i].nodec) { rs[w] = rs[i]; tk[w] = tk[i]; w++; } m = w; }
+    /* then a direct (debrid) file: always taken over a torrent, whatever their scores (it starts at once, never waits on a swarm) */
+    int direct = 0; for (int i = 0; i < m; i++) if (!rs[i].s->p2p) direct = 1;
+    if (direct) { int w = 0; for (int i = 0; i < m; i++) if (!rs[i].s->p2p) { rs[w] = rs[i]; tk[w] = tk[i]; w++; } m = w; } }
+  const BestRate *best = NULL;
+  /* tiers in order; inside one, the first best score (the web's stable sort) */
+  for (int done = 0, cur = -1; !best && !done; ) {
+    int next = -1; for (int i = 0; i < m; i++) if (tk[i] > cur && (next < 0 || tk[i] < next)) next = tk[i];
+    if (next < 0) { done = 1; break; } cur = next;
+    for (int i = 0; i < m; i++) if (tk[i] == cur && rs[i].need * (rs[i].s->p2p ? 1.6 : 1.3) <= rs[i].cap && (!best || rs[i].mute < best->mute || (rs[i].mute == best->mute && rs[i].sc > best->sc))) best = &rs[i];
+  }
+  if (!best && m) { int top = tk[0]; for (int i = 1; i < m; i++) if (tk[i] < top) top = tk[i];
+    for (int i = 0; i < m; i++) if (tk[i] == top && (!best || rs[i].mute < best->mute || (rs[i].mute == best->mute && (rs[i].need < best->need || (rs[i].need == best->need && rs[i].sc > best->sc))))) best = &rs[i]; }
+  const Stream *s = best ? best->s : NULL; if (best && out) *out = *best;
+  free(rs); free(tk); return s;
+}
+
+#ifdef SB_BEST_PURE
+int best_dts_mode(void) { return 0; } /* the scoring test: Auto, as the web app scores */
+#endif
+#ifndef SB_BEST_PURE
+#ifdef SB_PHONE
+int best_on(void) { return !strcmp(store_get("autoBest", "true"), "true"); } /* a phone: on until switched off (its switch shows it on; the line is measured as each film is chosen) */
+#else
+int best_on(void) { return !strcmp(store_get("autoBest", "false"), "true"); }
+#endif
+int best_dur(const cJSON *meta, const char *type) {
+  const cJSON *rt = meta ? cJSON_GetObjectItemCaseSensitive(meta, "runtime") : NULL; char b[64] = "";
+  if (cJSON_IsString(rt) && rt->valuestring) snprintf(b, sizeof b, "%s", rt->valuestring); else if (cJSON_IsNumber(rt)) snprintf(b, sizeof b, "%g", rt->valuedouble);
+  int d = sb_runtime_min(b); if (d) return d;
+  { const char *id = js_str(meta, "id", ""); int anime = !strncmp(id, "kitsu:", 6) || !strncmp(id, "mal:", 4) || !strncmp(id, "anilist:", 8); const cJSON *g; cJSON_ArrayForEach(g, js_arr(meta, "genres")) if (cJSON_IsString(g) && (!strcasecmp(g->valuestring, "anime") || !strcasecmp(g->valuestring, "animation"))) anime = anime || (type && !strcmp(type, "series"));
+    if (anime) return type && !strcmp(type, "series") ? 24 : 100; } /* (an anime episode: 24 min, not 45: its bitrate was taken for half what it is) */
+  return type && !strcmp(type, "series") ? 45 : 110;
+}
+
+/* ---- worker results, handed to the main thread ------------------------------------------------------ */
+static pthread_mutex_t mailMu = PTHREAD_MUTEX_INITIALIZER;
+static struct { int capsReady, capsSure, dtsCfg, speedReady, speedOk; TvCaps caps; double mbps; } mail;
+
+/* ---- what the TV can show and decode ---------------------------------------------------------------- */
+static TvCaps caps; static int capsKnown = -1, capsAsking;
+typedef struct { void (*cb)(const TvCaps *, void *); void *ud; } CapsWait;
+static CapsWait capsWaits[8]; static int nCapsWaits;
+const TvCaps *best_caps(void) {
+  if (capsKnown < 0) { const cJSON *n = store_node("tvCaps2"); capsKnown = 0;
+    if (cJSON_IsObject(n) && cJSON_GetObjectItemCaseSensitive(n, "maxRes")) { caps.maxRes = (int)js_num(n, "maxRes", 1080); caps.hdr = js_bool(n, "hdr", 0); caps.dv = js_bool(n, "dv", 0); caps.av1 = js_bool(n, "av1", 0); caps.truehd = js_bool(n, "truehd", 0); capsKnown = 1;
+      caps.dts = best_learned("dts") == 1 || (best_learned("dts") < 0 && js_bool(n, "dtsCfg", 0)); } } /* the old "dts" (a guess from the webOS release) no longer counts */ /* the old "dts" (a guess from the webOS release) no longer counts */
+  return capsKnown > 0 ? &caps : NULL;
+}
+/* the learned flags sit beside the asked ones in tvCaps2 ("dtsLearned", "hlsHevcOk", "dv81Hls"): kept when the caps are asked again */
+static const char *learned_key(const char *what) { return !strcmp(what, "dts") ? "dtsLearned" : what; }
+/* Settings > Audio > DTS sound: "auto" (playback finds out), "convert" (always converted), "off" (the TV plays it) */
+int best_dts_mode(void) { const char *m = store_get("dtsMode", "auto"); return !strcmp(m, "convert") ? 1 : !strcmp(m, "off") ? 2 : 0; }
+/* once, from this version: what the local stream taught before is forgotten (a failed restart there could end the next
+   attempt too), so each TV tries the converted stream again; what the TV taught about DTS stays */
+static void learned_reset_once(void) {
+  static int done; if (done) return; done = 1;
+  if (!strcmp(store_get("learnedReset", ""), "2")) return;
+  const cJSON *o = store_node("tvCaps2");
+  if (cJSON_IsObject(o) && (cJSON_GetObjectItemCaseSensitive(o, "hlsHevcOk") || cJSON_GetObjectItemCaseSensitive(o, "dv81Hls"))) {
+    cJSON *n = cJSON_Duplicate(o, 1);
+    if (n) { cJSON_DeleteItemFromObjectCaseSensitive(n, "hlsHevcOk"); cJSON_DeleteItemFromObjectCaseSensitive(n, "dv81Hls"); store_set_node("tvCaps2", n); fprintf(stderr, "[best] the local stream's lessons forgotten once: tried again\n"); } }
+  store_set("learnedReset", "2");
+}
+int best_learned(const char *what) {
+  learned_reset_once();
+  const cJSON *v = cJSON_GetObjectItemCaseSensitive(store_node("tvCaps2"), learned_key(what));
+  return cJSON_IsBool(v) ? cJSON_IsTrue(v) : -1;
+}
+void best_learn(const char *what, int yes) {
+  if (best_learned(what) == !!yes) return;
+  const cJSON *o = store_node("tvCaps2"); cJSON *n = cJSON_IsObject(o) ? cJSON_Duplicate(o, 1) : cJSON_CreateObject(); if (!n) return;
+  cJSON_DeleteItemFromObjectCaseSensitive(n, learned_key(what)); cJSON_AddBoolToObject(n, learned_key(what), yes != 0); store_set_node("tvCaps2", n);
+  if (!strcmp(what, "dts") && capsKnown > 0) caps.dts = yes != 0;
+  fprintf(stderr, "[best] learned: %s %s\n", what, yes ? "yes" : "no");
+}
+/* a luna answer read the web's way: anything set and not false counts */
+static int truthy(const cJSON *v) { return cJSON_IsTrue(v) || (cJSON_IsNumber(v) && v->valuedouble != 0) || (cJSON_IsString(v) && v->valuestring && *v->valuestring) || cJSON_IsObject(v) || cJSON_IsArray(v); }
+static int webos_major(void) { const char *d = plat_device_name(), *p = d ? strstr(d, "webOS ") : NULL; return p ? atoi(p + 6) : 0; }
+#ifdef SB_PHONE
+static void *caps_worker(void *arg) { /* a phone: its own screen and libVLC; 4K only where the screen is that big (a tablet); HDR10 yes (Android tone-maps it on any screen), Dolby Vision no; DTS and TrueHD decoded by libVLC */
+  (void)arg; TvCaps c = FALLBACK; int lines = plat_panel_lines(); c.maxRes = lines >= 2000 ? 2160 : 1080; c.dts = 1; c.truehd = 1;
+  { extern int pplat_media_caps(void); int m = pplat_media_caps(); /* the phone's own screen and decoders */
+    c.hdr = (m & 32) && (m & 1); /* HDR10: a 10-bit HEVC decoder and a screen that shows it (elsewhere it comes out washed out) */
+    c.dv = 0; /* libVLC decodes Dolby Vision's HEVC base alone: never Dolby Vision itself (a DV-only file's colours come out wrong) */
+    c.av1 = (m & 64) != 0; fprintf(stderr, "[best] phone: %d-line panel, up to %dp, HDR10 %s, 10-bit HEVC %s, AV1 %s (caps %d)\n", plat_panel_lines(), c.maxRes, (m & 1) ? "screen" : "no screen", (m & 32) ? "yes" : "no", c.av1 ? "yes" : "no", m); }
+  pthread_mutex_lock(&mailMu); mail.caps = c; mail.capsSure = 0; mail.dtsCfg = -1; mail.capsReady = 1; pthread_mutex_unlock(&mailMu); return NULL; }
+__attribute__((unused)) static void *caps_worker_tv(void *arg) {
+#else
+static void *caps_worker(void *arg) {
+#endif
+  (void)arg; TvCaps c = FALLBACK;
+  char *r = plat_luna_call("luna://com.webos.service.tv.systemproperty/getSystemInfo", "{\"keys\":[\"UHD\"]}", 3000);
+  cJSON *j = r ? cJSON_Parse(r) : NULL; free(r); const cJSON *u = cJSON_GetObjectItemCaseSensitive(j, "UHD");
+  if (cJSON_IsTrue(u) || (cJSON_IsString(u) && !strcmp(u->valuestring, "true"))) c.maxRes = 2160;
+  int sure = u != NULL; cJSON_Delete(j);
+  if (!sure) { int lines = plat_panel_lines(); if (lines >= 2160) c.maxRes = 2160; /* the service refused or kept quiet: the panel as SDL sees it */
+    fprintf(stderr, "[best] no answer on the panel from the TV: %d lines from SDL; asked again next start\n", lines); }
+  r = plat_luna_call("luna://com.webos.service.config/getConfigs", "{\"configNames\":[\"tv.model.supportHDR\",\"tv.model.supportDolbyVisionHDR\"]}", 3000);
+  j = r ? cJSON_Parse(r) : NULL; free(r); const cJSON *k = cJSON_GetObjectItemCaseSensitive(j, "configs");
+  c.hdr = truthy(cJSON_GetObjectItemCaseSensitive(k, "tv.model.supportHDR")); c.dv = truthy(cJSON_GetObjectItemCaseSensitive(k, "tv.model.supportDolbyVisionHDR")); cJSON_Delete(j);
+  /* The codecs: the TV's media engine has no query for them (the web asked its browser's canPlayType):
+     - DTS: LG decoded it up to the 2019 sets, dropped it in 2020-2022, brought it back on some 2023/24 models only
+       and dropped it again in 2025, so the release says nothing. A config key naming DTS is taken where the
+       firmware has one (dtsCfg); what playback shows (best_learn) wins over it, and the player tries the TV's own
+       decoder while nothing is known.
+     - AV1: decoded from the 2020 sets on (webOS 5+), the 4K panels at least; earlier sets have no AV1 at all.
+     - TrueHD: these TVs only pass it through to an eARC receiver and are silent without one: never counted.
+     A wrong "no" only costs a little score; a wrong "yes" would pick a stream that plays without sound or
+     picture, so every doubt is a no. */
+  int v = webos_major(), dtsCfg = -1;
+  c.dts = 0; c.av1 = v >= 6 || (v == 5 && c.maxRes == 2160); c.truehd = 0;
+  r = plat_luna_call("luna://com.webos.service.config/getConfigs", "{\"configNames\":[\"tv.model.*\"]}", 3000);
+  j = r ? cJSON_Parse(r) : NULL; free(r); k = cJSON_GetObjectItemCaseSensitive(j, "configs");
+  if (cJSON_IsObject(k)) { const cJSON *e; cJSON_ArrayForEach(e, k) { if (!e->string || !cJSON_IsBool(e)) continue; /* tv.model.supportDTS and the like, on firmware that has one */
+      char lk[96]; size_t q = 0; for (; e->string[q] && q + 1 < sizeof lk; q++) lk[q] = (char)(e->string[q] >= 'A' && e->string[q] <= 'Z' ? e->string[q] + 32 : e->string[q]); lk[q] = 0;
+      if (strstr(lk, "dts") && !strstr(lk, "pass") && !strstr(lk, "spdif")) { dtsCfg = cJSON_IsTrue(e); fprintf(stderr, "[best] the TV's config: %s %s\n", e->string, dtsCfg ? "true" : "false"); } } }
+  cJSON_Delete(j);
+  c.dts = dtsCfg == 1; /* what playback learned is applied on the main thread (caps_landed) */
+  const char *ov = getenv("SB_TVCAPS"); /* testing: SB_TVCAPS="maxRes=2160,hdr=1,dv=1,av1=0,dts=1,truehd=0" */
+  if (ov) { int x; const char *p;
+    if ((p = strstr(ov, "maxRes=")) && sscanf(p + 7, "%d", &x) == 1) c.maxRes = x; if ((p = strstr(ov, "hdr=")) && sscanf(p + 4, "%d", &x) == 1) c.hdr = x; if ((p = strstr(ov, "dv=")) && sscanf(p + 3, "%d", &x) == 1) c.dv = x;
+    if ((p = strstr(ov, "av1=")) && sscanf(p + 4, "%d", &x) == 1) c.av1 = x; if ((p = strstr(ov, "dts=")) && sscanf(p + 4, "%d", &x) == 1) c.dts = x; if ((p = strstr(ov, "truehd=")) && sscanf(p + 7, "%d", &x) == 1) c.truehd = x; }
+  fprintf(stderr, "[best] TV: %dp, HDR %d, Dolby Vision %d, AV1 %d, DTS %d, TrueHD %d (webOS %d)\n", c.maxRes, c.hdr, c.dv, c.av1, c.dts, c.truehd, v);
+  pthread_mutex_lock(&mailMu); mail.caps = c; mail.capsSure = sure; mail.dtsCfg = dtsCfg; mail.capsReady = 1; pthread_mutex_unlock(&mailMu);
+  return NULL;
+}
+void best_caps_probe(void (*cb)(const TvCaps *c, void *ud), void *ud) {
+  if (best_caps()) { if (cb) cb(&caps, ud); return; }
+  if (cb && nCapsWaits < 8) { capsWaits[nCapsWaits].cb = cb; capsWaits[nCapsWaits].ud = ud; nCapsWaits++; }
+  if (capsAsking) return;
+  capsAsking = 1; pthread_t t; if (pthread_create(&t, NULL, caps_worker, NULL)) { capsAsking = 0; caps_worker(NULL); return; } pthread_detach(t);
+}
+static void caps_landed(const TvCaps *c, int sure, int dtsCfg) {
+  caps = *c; capsKnown = 1; capsAsking = 0;
+  if (best_learned("dts") >= 0) caps.dts = best_learned("dts"); /* learned while the worker asked */
+  if (sure) { /* kept only when the TV answered: a guess serves this run only */
+  cJSON *n = cJSON_CreateObject(); cJSON_AddNumberToObject(n, "maxRes", c->maxRes); cJSON_AddBoolToObject(n, "hdr", c->hdr); cJSON_AddBoolToObject(n, "dv", c->dv);
+  cJSON_AddBoolToObject(n, "av1", c->av1); cJSON_AddBoolToObject(n, "truehd", c->truehd); if (dtsCfg >= 0) cJSON_AddBoolToObject(n, "dtsCfg", dtsCfg);
+  static const char *const KEEP[] = { "dtsLearned", "hlsHevcOk", "dv81Hls" }; /* what playback taught stays */
+  for (int i = 0; i < 3; i++) { int v = best_learned(KEEP[i]); if (v >= 0) cJSON_AddBoolToObject(n, KEEP[i], v); }
+  store_set_node("tvCaps2", n); }
+  int nw = nCapsWaits; CapsWait w[8]; memcpy(w, capsWaits, sizeof w); nCapsWaits = 0;
+  for (int i = 0; i < nw; i++) w[i].cb(&caps, w[i].ud);
+}
+
+/* ---- the line: downloads at once for a few seconds, the first moment left out (connections still opening) ---------- */
+/* Cloudflare's test server answers 429 to a download of 10 MB or more (since 2026-11; 50 MB was asked before and every
+   answer was refused: 0 Mbps): pieces under that, one after another, several at once so the moment between two pieces
+   (a new connection) is covered by the others; a refusal halves the piece (down to 1 MB) in case the limit moves
+   again, and a worker refused four times stops. Only a 2xx answer's bytes count (an error page's are taken back). */
+#define SPEED_BASE "https://speed.cloudflare.com/__down?bytes="
+#define SPEED_PIECE 9500000
+#ifdef SB_PHONE
+/* a phone: its network changes all the time, so it is measured at every choice, briefly: 3 s, eight at once (a
+   phone's few connections never filled a fast line otherwise), the first 250 ms left out; the number is the best
+   whole second (100 ms steps), so the 4G/5G connection and TLS set-up in the first second costs nothing. 9.5 MB
+   pieces: in 3 s a piece ends only past ~200 Mbps (8 x 9.5 MB), so new connections rarely open inside the window;
+   smaller pieces would open more of them. Data: what the line carries in ~2.75 s (20 Mbps: ~7 MB, 100 Mbps: ~34 MB),
+   once a minute at most */
+#define WARM_MS 250
+#define END_MS 3000
+#define SPEED_N 8
+#else
+#define WARM_MS 1000
+#define END_MS 7000
+#define SPEED_N 6
+#endif
+static struct { volatile int stop; Uint32 t0; long long bytes; pthread_mutex_t mu; long long bk[100]; volatile int piece, refused; Uint32 end; } SP = { 0, 0, 0, PTHREAD_MUTEX_INITIALIZER, { 0 }, SPEED_PIECE, 0, END_MS }; /* bk: bytes in each 100 ms (the best second of them is the line's speed) */
+static int speedBusy; static double speedAt; static void (*speedCb)(int, double, void *); static void *speedUd; static volatile int speedDropped;
+typedef struct { long long got, bk[100]; } SpeedRun; /* one piece's bytes (and in which 100 ms), taken back if it did not answer 2xx */
+static int speed_sink(const unsigned char *p, size_t n, void *ud) {
+  (void)p; SpeedRun *r = ud; Uint32 el = SDL_GetTicks() - SP.t0;
+  if (SP.stop || el >= SP.end) return 0;
+  if (n) { pthread_mutex_lock(&SP.mu); if (el >= WARM_MS) { SP.bytes += (long long)n; r->got += (long long)n; } if (el / 100 < 100) { SP.bk[el / 100] += (long long)n; r->bk[el / 100] += (long long)n; } pthread_mutex_unlock(&SP.mu); }
+  return 1;
+}
+static void *speed_one(void *arg) {
+  (void)arg; int refused = 0;
+  for (;;) { Uint32 el = SDL_GetTicks() - SP.t0; if (SP.stop || el >= SP.end) break;
+    char url[96]; snprintf(url, sizeof url, SPEED_BASE "%d", SP.piece); SpeedRun *r = calloc(1, sizeof *r); if (!r) break;
+    int st = net_stream_sync(url, (int)(SP.end - el) + 300, speed_sink, r);
+    if (st >= 300) { pthread_mutex_lock(&SP.mu); SP.bytes -= r->got; for (int i = 0; i < 100; i++) SP.bk[i] -= r->bk[i]; pthread_mutex_unlock(&SP.mu); } /* not a 2xx: its bytes (an error page) taken back (stopped at the end or cut off: real bytes, kept) */
+    free(r);
+    if (st >= 400) { if (SP.piece > 1000000) SP.piece /= 2; SP.refused = st; if (++refused >= 4) break; SDL_Delay(150); } /* refused: a smaller piece */
+    el = SDL_GetTicks() - SP.t0; if (st == 0 || st == -1 || SP.stop || el >= SP.end - 300) break; } /* a piece done early: the next */
+  return NULL;
+}
+static void *speed_boss(void *arg) {
+  (void)arg; pthread_t w[SPEED_N]; int nw = 0;
+  for (int i = 0; i < SPEED_N; i++) if (!pthread_create(&w[nw], NULL, speed_one, NULL)) nw++;
+  while (!SP.stop && SDL_GetTicks() - SP.t0 < SP.end) SDL_Delay(20);
+  Uint32 now = SDL_GetTicks(); SP.stop = 1;
+  for (int i = 0; i < nw; i++) pthread_join(w[i], NULL);
+  double secs = fmax(0.5, ((double)((now - SP.t0) < SP.end ? (now - SP.t0) : SP.end) - WARM_MS) / 1000), mbps = floor(SP.bytes * 8 / secs / 1e5 + 0.5) / 10;
+  { int nb = (int)((now - SP.t0 < SP.end ? now - SP.t0 : SP.end) / 100); long long best = 0; for (int i = 0; i + 10 <= nb && i + 10 <= 100; i++) { long long w = 0; for (int j = i; j < i + 10; j++) w += SP.bk[j]; if (w > best) best = w; } /* the best whole second: what the line can carry (the connections opening cost nothing) */
+    double peak = floor(best * 8 / 1e5 + 0.5) / 10; if (peak > mbps) { fprintf(stderr, "[best] speed: %.1f Mbps on average, %.1f at its best second\n", mbps, peak); mbps = peak; } }
+  fprintf(stderr, "[best] speed: %.1f Mbps (%lld bytes in %.1f s, pieces of %.1f MB)%s%s\n", mbps, SP.bytes, secs, SP.piece / 1e6, speedDropped ? ", cancelled" : "", SP.refused ? ", the test server refused some" : "");
+  if (SP.refused) fprintf(stderr, "[best] speed: the test server answered %d\n", SP.refused);
+  pthread_mutex_lock(&mailMu); mail.speedOk = SP.bytes > 0 && mbps > 0; mail.mbps = mbps; mail.speedReady = 1; pthread_mutex_unlock(&mailMu);
+  return NULL;
+}
+double best_speed_live(void) { /* the speed so far, once the first second has passed */
+  if (!speedBusy) return 0; Uint32 el = SDL_GetTicks() - SP.t0; if (el < WARM_MS + 400) return 0; if (el > SP.end) el = SP.end;
+  pthread_mutex_lock(&SP.mu); long long by = SP.bytes; pthread_mutex_unlock(&SP.mu); return by * 8.0 / ((el - WARM_MS) / 1000.0) / 1e6; }
+double best_net_mbps(void) { return atof(store_get("netMbps", "0")); }
+int best_speed_busy(void) { return speedBusy; }
+double best_speed_since(void) { return speedBusy ? app_now() - speedAt : -1; }
+void best_speed_run(void (*cb)(int, double, void *), void *ud) {
+  if (speedBusy) return;
+  speedBusy = 1; speedAt = app_now(); speedCb = cb; speedUd = ud; speedDropped = 0;
+  SP.stop = 0; SP.bytes = 0; memset(SP.bk, 0, sizeof SP.bk); SP.piece = SPEED_PIECE; SP.refused = 0; SP.end = getenv("SB_SPEEDMS") ? (Uint32)atoi(getenv("SB_SPEEDMS")) : END_MS; if (SP.end < 1000 || SP.end > 9900) SP.end = END_MS; SP.t0 = SDL_GetTicks(); /* (SB_SPEEDMS: development, a longer window as a reference) */
+  pthread_t t; if (pthread_create(&t, NULL, speed_boss, NULL)) { speedBusy = 0; if (cb) cb(0, 0, ud); return; } pthread_detach(t);
+}
+void best_speed_cancel(void) { if (!speedBusy) return; speedDropped = 1; SP.stop = 1; }
+static void speed_landed(int ok, double mbps) {
+  speedBusy = 0; if (speedDropped) return;
+  if (ok) { char b[32]; snprintf(b, sizeof b, "%.1f", mbps); size_t n = strlen(b); if (n > 2 && !strcmp(b + n - 2, ".0")) b[n - 2] = 0; store_set("netMbps", b);
+    snprintf(b, sizeof b, "%.0f", (double)time(NULL) * 1000); store_set("netAt", b); }
+  if (speedCb) speedCb(ok, mbps, speedUd);
+}
+
+/* ---- choosing for Play ------------------------------------------------------------------------------- */
+/* The player's title art comes up at once and stays while the addons answer. All answered: chosen at once; some
+   still answering: up to 10 s for them all (most answer in 1-3 s), then the best of what came; with nothing usable
+   by then, the first usable one that comes, up to 30 s. One quiet line says what it waits for. */
+static unsigned long long skipped[24]; static int nSkipped;
+static unsigned long long url_hash(const char *u) { unsigned long long h = 1469598103934665603ull; for (; *u; u++) { h ^= (unsigned char)*u; h *= 1099511628211ull; } return h; }
+void best_skip(const char *url) { if (url && *url) skipped[nSkipped++ % 24] = url_hash(url); }
+static int was_skipped(const Stream *s) { unsigned long long h = url_hash(s->url); for (int i = 0; i < nSkipped && i < 24; i++) if (skipped[i] == h) return 1; return 0; }
+static double capNext; /* best_cap_next: a ceiling for the next choice (a download: a smaller file) */
+void best_cap_next(double mbps) { capNext = mbps; }
+static int dlNext, fDl; void best_for_download_next(void) { dlNext = 1; } /* the next choice is for a download */
+/* A whole season (or several) offered for one episode: some addons answer an episode with its season's pack. Its
+   text names a season but not this episode ("S02", "Season 2", "Complete", "S01-S03", "E01-E10"); its size is the
+   pack's, not the episode's, so it would download all of it. Left out of an episode's choice while anything else is
+   there. */
+static int has_ep(const char *t, int se, int ep) { char a[16], b[16]; snprintf(a, sizeof a, "s%02de%02d", se, ep); snprintf(b, sizeof b, "%dx%02d", se, ep);
+  char l[1100]; size_t n = 0; for (; t[n] && n < sizeof l - 1; n++) l[n] = (char)(t[n] >= 'A' && t[n] <= 'Z' ? t[n] + 32 : t[n]); l[n] = 0;
+  const char *p = strstr(l, a); if (p) { p += strlen(a); return !(p[0] == '-' || (p[0] == 'e' && is_dig((unsigned char)p[1]))); } /* "S02E01-E08" is a range */
+  return strstr(l, b) != NULL; }
+static int pack_like(const Stream *s, int se, int ep) {
+  if (s->filename[0] && has_ep(s->filename, se, ep)) return 0; /* the file itself is the episode (a pack torrent's one file) */
+  char t[1100]; snprintf(t, sizeof t, "%s %s", s->name, s->title); if (has_ep(t, se, ep)) return 0;
+  char l[1100]; size_t n = 0; for (; t[n] && n < sizeof l - 1; n++) l[n] = (char)(t[n] >= 'A' && t[n] <= 'Z' ? t[n] + 32 : t[n]); l[n] = 0;
+  static const char *w[] = { "complete", "season", "saison", "temporada", "staffel", "stagione", "pack", "collection", "integrale", "all episodes" };
+  for (size_t i = 0; i < sizeof w / sizeof *w; i++) if (strstr(l, w[i])) return 1;
+  for (const char *p = l; (p = strchr(p, 's')); p++) if (is_dig((unsigned char)p[1]) && (p == l || !wch((unsigned char)p[-1]))) { const char *q = p + 1; while (is_dig((unsigned char)*q)) q++; if (*q != 'e') return 1; } /* "S02" alone, "S01-S03" */
+  return 0; }
+static int limRes, limHdr = -1, nextRes, nextHdr = -1; /* a download's own limits, for the next choice */
+void best_limits_next(int maxRes, int hdr) { nextRes = maxRes; nextHdr = hdr; }
+static struct { double ceil; unsigned tok; int on, done, fin, wait, said3, t12, t30, dur, speedWait; double t0; char type[16], vid[80]; Stream *all; int n, cap; BestStatusCb status; BestDoneCb cb; void *ud; } F;
+int best_choosing(void) { return F.on; }
+static void flow_end(void) { F.on = 0; free(F.all); F.all = NULL; F.n = F.cap = 0; }
+static void say(void) {
+  if (!F.on || F.fin || !F.status) return; int slow = F.wait > 0 && app_now() - F.t0 > 2.8; char t[256], n[16]; /* only when it takes a while: some addons are slow */
+  size_t k;
+#ifdef SB_PHONE
+  double ln = F.speedWait ? best_speed_live() : best_net_mbps();
+#else
+  double ln = 0;
+#endif
+  char mb[16]; snprintf(mb, sizeof mb, "%.0f", ln); /* the line's speed: live while measured, then as measured */
+  if (F.speedWait) { F.status(ln > 0 ? T1("Your connection  \xc2\xb7  {n} Mbps", "n", mb) : T("Your connection"), F.ud); return; }
+  k = ln > 0 ? (size_t)snprintf(t, sizeof t, "%s  \xc2\xb7  %s", T1("{n} Mbps", "n", mb), T("Choosing the best stream")) : (size_t)snprintf(t, sizeof t, "%s", T("Choosing the best stream"));
+  if (F.n) { snprintf(n, sizeof n, "%d", F.n); k += snprintf(t + k, sizeof t - k, "  \xc2\xb7  %s", T1("{n} found", "n", n)); }
+  if (slow && k < sizeof t) { snprintf(n, sizeof n, "%d", F.wait); snprintf(t + k, sizeof t - k, "  \xc2\xb7  %s", F.wait == 1 ? T("waiting for 1 addon") : T1("waiting for {n} addons", "n", n)); }
+  F.status(t, F.ud);
+}
+static void decide(int force);
+static void on_speed(int ok, double mbps, void *ud) { (void)ok; (void)mbps; (void)ud; if (!F.on) return; F.speedWait = 0; say(); if (F.done) decide(1); else decide(0); }
+static void decide(int force) {
+  if (!F.on || F.fin) return;
+  double el = app_now() - F.t0;
+  if (F.speedWait && el < 3.6) return; /* the line's measure first (it takes 3 s) */
+  if (!F.done && !force && el < 10) return;
+#ifdef SB_PHONE
+  if (!F.done && !force && el < 30 && F.wait > 0) { int direct = 0; for (int i = 0; i < F.n && !direct; i++) if (!F.all[i].p2p && F.all[i].url[0] && !was_skipped(&F.all[i])) direct = 1; /* torrents only so far, an addon still answering: a debrid one is often the slow one, and a direct link always beats a torrent; it is waited for (up to 30 s, when the choice is made anyway; all heard: at once) */
+    if (!direct) { static double said; if (app_now() - said > 5) { said = app_now(); fprintf(stderr, "[best] %.0f s: no direct link yet, %d addon(s) still answering: waiting for them\n", el, F.wait); } return; } }
+#endif
+  const Stream **l = F.n ? malloc(F.n * sizeof *l) : NULL; int nl = 0; for (int i = 0; i < F.n; i++) if (!was_skipped(&F.all[i])) l[nl++] = &F.all[i]; /* never one that just failed */
+  { int se = 0, ep = 0; const char *c = strchr(F.vid, ':'); if (c && sscanf(c, ":%d:%d", &se, &ep) == 2 && se > 0) { int k = 0; for (int i = 0; i < nl; i++) if (!pack_like(l[i], se, ep)) l[k++] = l[i];
+      if (k) { if (k < nl) fprintf(stderr, "[best] %d season packs left out\n", nl - k); nl = k; } } } /* an episode: never its whole season when the episode alone is there */
+  BestRate r; double mb = best_net_mbps(); if (F.ceil > 0 && (mb <= 0 || mb > F.ceil)) mb = F.ceil; TvCaps lc; const TvCaps *cp = NULL; if (limRes > 0 || limHdr >= 0) { const TvCaps *bc = best_caps(); lc = bc ? *bc : FALLBACK; if (limRes > 0 && (!lc.maxRes || limRes < lc.maxRes)) lc.maxRes = limRes; if (limHdr >= 0) lc.hdr = limHdr && lc.hdr; cp = &lc; } /* a download's own limits */
+  { char au[16]; best_audio_for(F.type, F.vid, au, sizeof au); best_set_langs(au, store_get("subsLang", "")); } /* (asked again as it decides: a title's own language, asked for as the choice began, is in by now) */
+  fprintf(stderr, "[best] choosing after %.1f s, %d addon(s) still answering\n", el, F.wait > 0 ? F.wait : 0);
+  rateDl = fDl; const Stream *b = best_pick(l, nl, F.dur, cp, mb > 0 ? mb : -1, &r); rateDl = 0; free(l); /* (a ceiling: a download's size) */
+  if (!b) { if (!F.done) return; /* every addon heard first (each times out at 45 s): a slow one may be the only one with streams */ F.fin = 1; BestDoneCb cb = F.cb; void *ud = F.ud; fprintf(stderr, "[best] nothing suits this TV (%d streams)\n", F.n); flow_end(); if (cb) cb(NULL, NULL, ud); return; }
+  F.fin = 1; char info[2048]; best_stream_info(b, info, sizeof info); if (strlen(info) > 160) info[160] = 0; fprintf(stderr, "[best] %s | %s\n", r.sum, info);
+  if (F.status) F.status(r.sum, F.ud);
+  Stream pick = *b; r.s = &pick; BestDoneCb cb = F.cb; void *ud = F.ud; flow_end(); if (cb) cb(&pick, &r, ud);
+}
+static void on_part(StreamGroup *g, int gi, void *ud) {
+  (void)gi;
+  if (F.on && !F.fin && (unsigned)(uintptr_t)ud == F.tok) {
+    if (F.n + g->n > F.cap) { F.cap = (F.n + g->n) * 2; F.all = realloc(F.all, F.cap * sizeof *F.all); }
+    memcpy(F.all + F.n, g->items, g->n * sizeof *g->items); F.n += g->n; say(); decide(0);
+  }
+  free(g->items); /* the part's streams belong to whoever receives them */
+}
+static void on_ans(int pending, int count, void *ud) { (void)count; if ((unsigned)(uintptr_t)ud != F.tok) return; F.wait = pending; say(); }
+static void on_done(int total, void *ud) { (void)total; if ((unsigned)(uintptr_t)ud != F.tok || !F.on) return; F.done = 1; decide(1); }
+static void on_caps(const TvCaps *c, void *ud) { (void)c; if (!F.on || (unsigned)(uintptr_t)ud != F.tok) return; sb_streams_ex(F.type, F.vid, on_part, on_done, on_ans, ud); }
+/* the audio language a stream is chosen for, the same order the player picks its track in: a series' own choice (the
+   track picked by hand in it, kept for the show), else the settings' language, else Original: the title's own language
+   (TMDB's; unknown yet: none, English then); always as the 3-letter code the streams' names are read with */
+void best_audio_for(const char *type, const char *vid, char *out, size_t cap) { out[0] = 0; char id[64]; snprintf(id, sizeof id, "%s", vid ? vid : ""); { char *c = strchr(id, ':'); if (c) *c = 0; }
+  const char *l = NULL;
+  if (type && !strcmp(type, "series") && id[0]) { const cJSON *a = store_node("showPrefs"), *o = cJSON_IsObject(a) ? cJSON_GetObjectItemCaseSensitive(a, id) : NULL; const cJSON *al = o ? cJSON_GetObjectItemCaseSensitive(o, "al") : NULL; if (cJSON_IsString(al) && al->valuestring[0]) l = al->valuestring; }
+  if (!l) { const char *v = store_get("defaultAudioTrack", ""); if (!strcmp(store_get("enableDefaultAudioTrack", "false"), "true") && *v && strcmp(v, "orig")) l = v; }
+  if (!l && id[0]) { const char *o = tmdb_orig_lang(id); if (o && *o) l = o; }
+  if (l) subs_lang_canon(l, out, cap); }
+unsigned best_choose(const char *type, const char *vid, int durMin, BestStatusCb status, BestDoneCb done, void *ud) {
+  static unsigned tokN; flow_end(); memset(&F, 0, sizeof F);
+  { char au[16]; best_audio_for(type, vid, au, sizeof au); best_set_langs(au, store_get("subsLang", "")); } /* the audio language this title wants (as the player picks its track) and the subtitles' */
+  F.tok = ++tokN; F.ceil = capNext; capNext = 0; fDl = dlNext; dlNext = 0; limRes = nextRes; limHdr = nextHdr; nextRes = 0; nextHdr = -1; F.on = 1; F.wait = -1; F.t0 = app_now(); F.dur = durMin > 0 ? durMin : 100; F.status = status; F.cb = done; F.ud = ud;
+  snprintf(F.type, sizeof F.type, "%s", type); snprintf(F.vid, sizeof F.vid, "%s", vid);
+  unsigned tok = F.tok; say();
+#ifdef SB_PHONE
+  { static double lastAt = -999; if (app_now() - lastAt > 60) { lastAt = app_now(); F.speedWait = 1; best_speed_cancel(); best_speed_run(on_speed, NULL); say(); } } /* measured now, while the addons answer (once a minute at most: a season's episodes share it) */
+#endif
+  best_caps_probe(on_caps, (void *)(uintptr_t)tok);
+  return tok;
+}
+void best_choose_cancel(unsigned tok) { if (F.on && F.tok == tok) flow_end(); }
+
+void best_tick(void) {
+  static unsigned frame; if (frame == app_frame() && frame) return; frame = app_frame(); /* safe to call from more than one place */
+  int cr = 0, csure = 0, ccfg = -1, sr = 0, sok = 0; TvCaps c; double mb = 0;
+  pthread_mutex_lock(&mailMu); if (mail.capsReady) { cr = 1; c = mail.caps; csure = mail.capsSure; ccfg = mail.dtsCfg; mail.capsReady = 0; } if (mail.speedReady) { sr = 1; sok = mail.speedOk; mb = mail.mbps; mail.speedReady = 0; } pthread_mutex_unlock(&mailMu);
+  if (cr) caps_landed(&c, csure, ccfg);
+  if (sr) speed_landed(sok, mb);
+  if (F.on) { double el = app_now() - F.t0;
+    if (!F.said3 && el >= 3) { F.said3 = 1; say(); }
+    if (F.speedWait && !F.fin) { static double sAt; if (app_now() - sAt > 0.25) { sAt = app_now(); say(); } } /* the speed climbing as it is measured */
+    if (F.on && !F.t12 && el >= 10.1) { F.t12 = 1; decide(0); }
+    if (F.on && !F.t30 && el >= 30.1) { F.t30 = 1; decide(1); } }
+}
+#endif
